@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Backpack -->
+  <rect x="50" y="180" width="70" height="150" rx="20" ry="20" fill="#c10e0e" stroke="#000" stroke-width="10"/>
+  
+  <!-- Body and Legs -->
+  <path d="M140,100 
+           C140,20 360,20 360,100 
+           L360,350 
+           C360,450 360,450 300,450 
+           C260,450 260,400 260,350 
+           L240,350 
+           C240,400 240,450 200,450 
+           C140,450 140,450 140,350 
+           Z" 
+        fill="#ff1111" stroke="#000" stroke-width="10"/>
+        
+  <!-- Visor -->
+  <ellipse cx="280" cy="180" rx="90" ry="60" fill="#9eeeff" stroke="#000" stroke-width="10"/>
+  
+  <!-- Visor Reflection -->
+  <ellipse cx="310" cy="160" rx="40" ry="20" fill="#ffffff" opacity="0.6"/>
+</svg>
