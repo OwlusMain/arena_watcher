@@ -2,16 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import Any, Optional, Sequence
 
 from telegram import Update
-from telegram.constants import ParseMode
+from telegram.constants import ChatMemberStatus, ChatType
 from telegram.ext import (
     AIORateLimiter,
     Application,
     ApplicationBuilder,
     CallbackContext,
     CommandHandler,
+    ChatMemberHandler,
     ContextTypes,
     JobQueue,
 )
@@ -20,10 +22,40 @@ from .arena_client import ArenaClient, ArenaFetchError, ModelEntry
 from .config import Config
 from .state_store import StateStore, TrackedModel, WatcherState
 
+
+@dataclass(slots=True)
+class CapabilityDiff:
+    identifier: str
+    model: TrackedModel
+    input_added: list[str]
+    input_removed: list[str]
+    output_added: list[str]
+    output_removed: list[str]
+
+    def has_changes(self) -> bool:
+        return any(
+            (
+                self.input_added,
+                self.input_removed,
+                self.output_added,
+                self.output_removed,
+            )
+        )
+
 logger = logging.getLogger(__name__)
 
 
 class ArenaWatcherBot:
+    _CHANNEL_ACTIVE_STATUSES = {
+        ChatMemberStatus.ADMINISTRATOR,
+        ChatMemberStatus.MEMBER,
+        ChatMemberStatus.OWNER,
+    }
+    _CHANNEL_INACTIVE_STATUSES = {
+        ChatMemberStatus.LEFT,
+        ChatMemberStatus.KICKED,
+    }
+
     def __init__(
         self,
         config: Config,
@@ -45,8 +77,10 @@ class ArenaWatcherBot:
             .build()
         )
         self._app.add_handler(CommandHandler("start", self._handle_start))
-        self._app.add_handler(CommandHandler("status", self._handle_status))
         self._app.add_handler(CommandHandler("stop", self._handle_stop))
+        self._app.add_handler(
+            ChatMemberHandler(self._handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER)
+        )
 
         job_queue = self._app.job_queue
         if job_queue is None:  # pragma: no cover - guard for PTB configuration changes
@@ -74,31 +108,9 @@ class ArenaWatcherBot:
             chat_id=chat_id,
             text=(
                 "👋 I'll notify this chat about Battle mode model additions/removals "
-                "on lmarena.ai.\nUse /status to see the last known models."
+                "on lmarena.ai."
             ),
         )
-
-    async def _handle_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not update.effective_chat:
-            return
-        async with self._state_lock:
-            if self._last_snapshot:
-                snapshot = sorted(self._last_snapshot.values(), key=lambda m: m.name.lower())
-            else:
-                snapshot = []
-
-        if snapshot:
-            formatted = "\n".join(f"• {entry.name}" for entry in snapshot)
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=f"Currently tracked models ({len(snapshot)}):\n{formatted}",
-                parse_mode=ParseMode.MARKDOWN,
-            )
-        else:
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text="No models tracked yet. I'll update after the first successful poll.",
-            )
 
     async def _handle_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.effective_chat:
@@ -117,6 +129,43 @@ class ArenaWatcherBot:
                     chat_id=chat_id,
                     text="This chat was not subscribed to updates.",
                 )
+
+    async def _handle_my_chat_member(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        chat_member_update = update.my_chat_member
+        if not chat_member_update:
+            return
+        chat = chat_member_update.chat
+        if not chat or chat.type != ChatType.CHANNEL:
+            return
+
+        chat_id = chat.id
+        new_status = chat_member_update.new_chat_member.status
+
+        if new_status in self._CHANNEL_ACTIVE_STATUSES:
+            async with self._state_lock:
+                if chat_id in self._state.chats:
+                    return
+                self._state.chats.add(chat_id)
+                self._store.save(self._state)
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "Thanks for adding me! I'll post LMArena Battle mode updates here. "
+                        "Remove me from the channel to stop the notifications."
+                    ),
+                )
+            except Exception as exc:  # pragma: no cover - network failure
+                logger.warning("Failed to greet channel %s: %s", chat_id, exc)
+        elif new_status in self._CHANNEL_INACTIVE_STATUSES:
+            async with self._state_lock:
+                if chat_id in self._state.chats:
+                    self._state.chats.remove(chat_id)
+                    self._store.save(self._state)
 
     async def _poll_arena(self, context: CallbackContext) -> None:
         try:
@@ -139,11 +188,13 @@ class ArenaWatcherBot:
             added_ids = set(snapshots) - set(previous)
             removed_ids = set(previous) - set(snapshots)
             overlapping_ids = set(previous).intersection(snapshots)
-            metadata_changed = any(
-                previous[identifier] != snapshots[identifier] for identifier in overlapping_ids
-            )
+            capability_updates: list[CapabilityDiff] = []
+            for identifier in overlapping_ids:
+                diff = self._capability_changes(identifier, previous[identifier], snapshots[identifier])
+                if diff.has_changes():
+                    capability_updates.append(diff)
 
-            if not added_ids and not removed_ids and not metadata_changed:
+            if not added_ids and not removed_ids and not capability_updates:
                 logger.debug("No changes detected in arena models.")
                 return
 
@@ -159,11 +210,12 @@ class ArenaWatcherBot:
             self._state.known_models = snapshots
             self._store.save(self._state)
 
-        if added_models or removed_models:
+        if added_models or removed_models or capability_updates:
             await self._notify_changes(
                 context,
                 added=added_models,
                 removed=removed_models,
+                capability_updates=capability_updates,
             )
 
     def _snapshot_model(self, entry: ModelEntry) -> TrackedModel:
@@ -173,6 +225,38 @@ class ArenaWatcherBot:
             input_capabilities=input_caps,
             output_capabilities=output_caps,
         )
+
+    @staticmethod
+    def _capability_changes(
+        identifier: str,
+        before: TrackedModel,
+        after: TrackedModel,
+    ) -> CapabilityDiff:
+        input_added, input_removed = ArenaWatcherBot._diff_capabilities(
+            before.input_capabilities, after.input_capabilities
+        )
+        output_added, output_removed = ArenaWatcherBot._diff_capabilities(
+            before.output_capabilities, after.output_capabilities
+        )
+        return CapabilityDiff(
+            identifier=identifier,
+            model=after,
+            input_added=input_added,
+            input_removed=input_removed,
+            output_added=output_added,
+            output_removed=output_removed,
+        )
+
+    @staticmethod
+    def _diff_capabilities(
+        previous: Optional[Sequence[str]],
+        current: Optional[Sequence[str]],
+    ) -> tuple[list[str], list[str]]:
+        prev_set = set(previous or [])
+        curr_set = set(current or [])
+        added = sorted(curr_set - prev_set)
+        removed = sorted(prev_set - curr_set)
+        return added, removed
 
     @staticmethod
     def _capability_lists(
@@ -209,11 +293,38 @@ class ArenaWatcherBot:
         output_summary = summarize(output_capabilities)
         return f" (input: {input_summary}; output: {output_summary})"
 
+    def _format_capability_change(self, diff: CapabilityDiff) -> str:
+        segments = []
+        input_segment = self._format_capability_delta("input", diff.input_added, diff.input_removed)
+        output_segment = self._format_capability_delta("output", diff.output_added, diff.output_removed)
+        for segment in (input_segment, output_segment):
+            if segment:
+                segments.append(segment)
+        if not segments:
+            return ""
+        return f" ({'; '.join(segments)})"
+
+    @staticmethod
+    def _format_capability_delta(
+        label: str,
+        added: Sequence[str],
+        removed: Sequence[str],
+    ) -> str:
+        fragments = []
+        if added:
+            fragments.append("+" + ", +".join(added))
+        if removed:
+            fragments.append("-" + ", -".join(removed))
+        if not fragments:
+            return ""
+        return f"{label}: {'; '.join(fragments)}"
+
     async def _notify_changes(
         self,
         context: CallbackContext,
         added: Sequence[TrackedModel],
         removed: Sequence[tuple[str, TrackedModel]],
+        capability_updates: Sequence[CapabilityDiff],
     ) -> None:
         if not self._state.chats:
             logger.debug("No chats to notify for model changes.")
@@ -225,7 +336,7 @@ class ArenaWatcherBot:
                 f"• {model.name}{self._format_capabilities(model.input_capabilities, model.output_capabilities)}"
                 for model in added
             )
-            added_message = f"🆕 New models in Battle mode:\n{lines}"
+            added_message = f"🆕 New models on LMArena:\n{lines}"
 
         removed_message = ""
         if removed:
@@ -234,9 +345,17 @@ class ArenaWatcherBot:
                 f"{self._format_capabilities(model.input_capabilities, model.output_capabilities)}"
                 for identifier, model in removed
             )
-            removed_message = f"❌ Removed from Battle mode:\n{lines}"
+            removed_message = f"❌ Removed from LMArena:\n{lines}"
 
-        message_parts = [part for part in (added_message, removed_message) if part]
+        capability_message = ""
+        if capability_updates:
+            lines = "\n".join(
+                f"• {diff.model.name}{self._format_capability_change(diff)}"
+                for diff in capability_updates
+            )
+            capability_message = f"⚙️ Capability updates on LMArena:\n{lines}"
+
+        message_parts = [part for part in (added_message, removed_message, capability_message) if part]
         if not message_parts:
             return
 

@@ -9,7 +9,7 @@ The project does **not** hard-code a particular API route because the publicly-a
 - Polls a user-provided HTTP endpoint at a configurable interval.
 - Detects newly-added and removed battle models by identifier.
 - Sends updates to every chat where `/start` was issued.
-- Offers `/status` for a quick snapshot and `/stop` to unsubscribe a chat.
+- Offers `/stop` to unsubscribe a chat.
 - Persists the latest known models and chat subscriptions on disk.
 
 ## Installation
@@ -61,7 +61,7 @@ python main.py
 2. Invite the bot to any group or DM it directly.
 3. Run `/start` to subscribe the chat.
 4. The bot polls the configured endpoint at the specified interval and posts updates when models are added or removed.
-5. Use `/status` to print the last-known roster or `/stop` to unsubscribe the chat.
+5. Use `/stop` to unsubscribe the chat.
 
 ## Development Notes
 
