@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Sequence
-from typing import Any, Iterable
+from typing import Any, Optional, Sequence
 
 from telegram import Update
 from telegram.constants import ParseMode
@@ -19,7 +18,7 @@ from telegram.ext import (
 
 from .arena_client import ArenaClient, ArenaFetchError, ModelEntry
 from .config import Config
-from .state_store import StateStore, WatcherState
+from .state_store import StateStore, TrackedModel, WatcherState
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +35,7 @@ class ArenaWatcherBot:
         self._store = state_store
         self._state = self._store.load()
         self._state_lock = asyncio.Lock()
-        self._last_snapshot: dict[str, ModelEntry] = {}
+        self._last_snapshot: dict[str, TrackedModel] = dict(self._state.known_models)
         self._app: Application = (
             ApplicationBuilder()
             .token(config.telegram_token)
@@ -128,47 +127,93 @@ class ArenaWatcherBot:
 
         logger.debug("Fetched %d models from arena.", len(models))
 
+        snapshots = {
+            entry.identifier: self._snapshot_model(entry)
+            for entry in models
+        }
+
         async with self._state_lock:
-            previous = set(self._state.known_models)
-            current = {entry.identifier: entry for entry in models}
-            self._last_snapshot = current
+            previous = dict(self._state.known_models)
+            self._last_snapshot = snapshots
 
-            added_ids = set(current) - previous
-            removed_ids = previous - set(current)
+            added_ids = set(snapshots) - set(previous)
+            removed_ids = set(previous) - set(snapshots)
+            overlapping_ids = set(previous).intersection(snapshots)
+            metadata_changed = any(
+                previous[identifier] != snapshots[identifier] for identifier in overlapping_ids
+            )
 
-            if not added_ids and not removed_ids:
+            if not added_ids and not removed_ids and not metadata_changed:
                 logger.debug("No changes detected in arena models.")
                 return
 
-            self._state.known_models = set(current)
+            added_models = sorted(
+                (snapshots[identifier] for identifier in added_ids),
+                key=lambda model: model.name.lower(),
+            )
+            removed_models = sorted(
+                ((identifier, previous[identifier]) for identifier in removed_ids),
+                key=lambda item: item[1].name.lower(),
+            )
+
+            self._state.known_models = snapshots
             self._store.save(self._state)
 
-        await self._notify_changes(
-            context,
-            added=[current[identifier] for identifier in added_ids],
-            removed_identifiers=removed_ids,
+        if added_models or removed_models:
+            await self._notify_changes(
+                context,
+                added=added_models,
+                removed=removed_models,
+            )
+
+    def _snapshot_model(self, entry: ModelEntry) -> TrackedModel:
+        input_caps, output_caps = self._capability_lists(entry)
+        return TrackedModel(
+            name=entry.name,
+            input_capabilities=input_caps,
+            output_capabilities=output_caps,
         )
 
-    def _format_capabilities(self, model: ModelEntry) -> str:
-        capabilities = model.raw.get("capabilities") if isinstance(model.raw, dict) else None
+    @staticmethod
+    def _capability_lists(
+        entry: ModelEntry,
+    ) -> tuple[Optional[list[str]], Optional[list[str]]]:
+        capabilities = entry.raw.get("capabilities") if isinstance(entry.raw, dict) else None
         if not isinstance(capabilities, dict):
+            return None, None
+        return (
+            ArenaWatcherBot._truthy_capability_keys(capabilities.get("inputCapabilities")),
+            ArenaWatcherBot._truthy_capability_keys(capabilities.get("outputCapabilities")),
+        )
+
+    @staticmethod
+    def _truthy_capability_keys(node: Any) -> list[str]:
+        if not isinstance(node, dict):
+            return []
+        return [str(key) for key, value in node.items() if value]
+
+    def _format_capabilities(
+        self,
+        input_capabilities: Optional[Sequence[str]],
+        output_capabilities: Optional[Sequence[str]],
+    ) -> str:
+        if input_capabilities is None and output_capabilities is None:
             return ""
 
-        def summarize(node: Any) -> str:
-            if not isinstance(node, dict):
+        def summarize(values: Optional[Sequence[str]]) -> str:
+            if values is None:
                 return "n/a"
-            enabled = [key for key, value in node.items() if value]
-            return ", ".join(enabled) if enabled else "none"
+            return ", ".join(values) if values else "none"
 
-        input_summary = summarize(capabilities.get("inputCapabilities"))
-        output_summary = summarize(capabilities.get("outputCapabilities"))
+        input_summary = summarize(input_capabilities)
+        output_summary = summarize(output_capabilities)
         return f" (input: {input_summary}; output: {output_summary})"
 
     async def _notify_changes(
         self,
         context: CallbackContext,
-        added: Sequence[ModelEntry],
-        removed_identifiers: Iterable[str],
+        added: Sequence[TrackedModel],
+        removed: Sequence[tuple[str, TrackedModel]],
     ) -> None:
         if not self._state.chats:
             logger.debug("No chats to notify for model changes.")
@@ -177,14 +222,18 @@ class ArenaWatcherBot:
         added_message = ""
         if added:
             lines = "\n".join(
-                f"• {entry.name}{self._format_capabilities(entry)}" for entry in added
+                f"• {model.name}{self._format_capabilities(model.input_capabilities, model.output_capabilities)}"
+                for model in added
             )
             added_message = f"🆕 New models in Battle mode:\n{lines}"
 
         removed_message = ""
-        removed_list = sorted(removed_identifiers)
-        if removed_list:
-            lines = "\n".join(f"• {identifier}" for identifier in removed_list)
+        if removed:
+            lines = "\n".join(
+                f"• {model.name or identifier}"
+                f"{self._format_capabilities(model.input_capabilities, model.output_capabilities)}"
+                for identifier, model in removed
+            )
             removed_message = f"❌ Removed from Battle mode:\n{lines}"
 
         message_parts = [part for part in (added_message, removed_message) if part]

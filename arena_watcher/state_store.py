@@ -5,26 +5,74 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
-from typing import Dict, Iterable, List, Set
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
 
+def _normalize_capability_list(value: Any) -> Optional[List[str]]:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        normalized = [str(item) for item in value if isinstance(item, str) and item]
+        return normalized
+    return None
+
+
+@dataclass(slots=True)
+class TrackedModel:
+    name: str
+    input_capabilities: Optional[List[str]] = None
+    output_capabilities: Optional[List[str]] = None
+
+    def to_json(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "input_capabilities": self.input_capabilities,
+            "output_capabilities": self.output_capabilities,
+        }
+
+    @classmethod
+    def from_json(cls, data: Any) -> "TrackedModel":
+        if not isinstance(data, dict):
+            return cls(name=str(data))
+        name = str(data.get("name") or "unknown")
+        return cls(
+            name=name,
+            input_capabilities=_normalize_capability_list(data.get("input_capabilities")),
+            output_capabilities=_normalize_capability_list(data.get("output_capabilities")),
+        )
+
+
 @dataclass(slots=True)
 class WatcherState:
-    known_models: Set[str] = field(default_factory=set)
+    known_models: Dict[str, TrackedModel] = field(default_factory=dict)
     chats: Set[int] = field(default_factory=set)
 
-    def to_json(self) -> Dict[str, List]:
+    def to_json(self) -> Dict[str, Any]:
         return {
-            "known_models": sorted(self.known_models),
+            "known_models": {
+                identifier: model.to_json()
+                for identifier, model in sorted(self.known_models.items())
+            },
             "chats": sorted(self.chats),
         }
 
     @classmethod
     def from_json(cls, data: Dict[str, Iterable]) -> "WatcherState":
+        raw_models = data.get("known_models", {})
+        if isinstance(raw_models, dict):
+            known_models = {
+                str(identifier): TrackedModel.from_json(payload)
+                for identifier, payload in raw_models.items()
+            }
+        elif isinstance(raw_models, list):
+            known_models = {str(identifier): TrackedModel(name=str(identifier)) for identifier in raw_models}
+        else:
+            known_models = {}
+
         return cls(
-            known_models=set(data.get("known_models", [])),
+            known_models=known_models,
             chats=set(int(chat) for chat in data.get("chats", [])),
         )
 
