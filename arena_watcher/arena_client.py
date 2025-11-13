@@ -125,7 +125,6 @@ class ArenaClient:
             raise ArenaFetchError("initialModels array did not terminate properly.")
 
         raw_segment = html[array_start : array_end + 1]
-        print(raw_segment)
         try:
             decoded = bytes(raw_segment, "utf-8").decode("unicode_escape")
             return json.loads(decoded)
