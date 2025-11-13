@@ -53,7 +53,7 @@ class ArenaWatcherBot:
     }
     _CHANNEL_INACTIVE_STATUSES = {
         ChatMemberStatus.LEFT,
-        ChatMemberStatus.KICKED,
+        ChatMemberStatus.BANNED,
     }
 
     def __init__(
