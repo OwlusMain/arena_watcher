@@ -20,6 +20,7 @@ from telegram.ext import (
 
 from .arena_client import ArenaClient, ArenaFetchError, ModelEntry
 from .config import Config
+from .google_models_client import GoogleModelFetchError, GoogleModelsClient
 from .state_store import StateStore, TrackedModel, WatcherState
 
 
@@ -61,9 +62,11 @@ class ArenaWatcherBot:
         config: Config,
         arena_client: ArenaClient,
         state_store: StateStore,
+        google_models_client: GoogleModelsClient | None = None,
     ) -> None:
         self._config = config
         self._arena_client = arena_client
+        self._google_client = google_models_client
         self._store = state_store
         self._state = self._store.load()
         self._state_lock = asyncio.Lock()
@@ -92,6 +95,14 @@ class ArenaWatcherBot:
             first=0,
             name="arena-poller",
         )
+        if self._google_client:
+            job_queue.run_repeating(
+                self._poll_google_models,
+                interval=self._config.google_poll_interval_seconds
+                or self._config.poll_interval_seconds,
+                first=5,
+                name="google-model-poller",
+            )
 
     async def _on_startup(self, _: Application) -> None:
         logger.info("Arena watcher bot started with %d stored chats.", len(self._state.chats))
@@ -218,12 +229,61 @@ class ArenaWatcherBot:
                 capability_updates=capability_updates,
             )
 
+    async def _poll_google_models(self, context: CallbackContext) -> None:
+        if not self._google_client:
+            return
+
+        try:
+            models = self._google_client.fetch_models()
+        except GoogleModelFetchError as exc:
+            logger.warning("Google models fetch failed: %s", exc)
+            return
+
+        logger.debug("Fetched %d models from Google.", len(models))
+
+        snapshots = {entry.identifier: self._snapshot_google_model(entry) for entry in models}
+
+        async with self._state_lock:
+            previous = dict(self._state.google_models)
+
+            added_ids = set(snapshots) - set(previous)
+            removed_ids = set(previous) - set(snapshots)
+
+            if not added_ids and not removed_ids:
+                logger.debug("No changes detected in Google model list.")
+                return
+
+            added_models = sorted(
+                (snapshots[identifier] for identifier in added_ids),
+                key=lambda model: model.name.lower(),
+            )
+            removed_models = sorted(
+                ((identifier, previous[identifier]) for identifier in removed_ids),
+                key=lambda item: item[1].name.lower(),
+            )
+
+            self._state.google_models = snapshots
+            self._store.save(self._state)
+
+        if added_models or removed_models:
+            await self._notify_google_changes(
+                context,
+                added=added_models,
+                removed=removed_models,
+            )
+
     def _snapshot_model(self, entry: ModelEntry) -> TrackedModel:
         input_caps, output_caps = self._capability_lists(entry)
         return TrackedModel(
             name=entry.name,
             input_capabilities=input_caps,
             output_capabilities=output_caps,
+        )
+
+    def _snapshot_google_model(self, entry: ModelEntry) -> TrackedModel:
+        return TrackedModel(
+            name=entry.name,
+            output_capabilities=None,
         )
 
     @staticmethod
@@ -366,6 +426,44 @@ class ArenaWatcherBot:
                 await context.bot.send_message(chat_id=chat_id, text=message)
             except Exception as exc:  # pragma: no cover - network failure
                 logger.warning("Failed to send update to chat %s: %s", chat_id, exc)
+
+    async def _notify_google_changes(
+        self,
+        context: CallbackContext,
+        added: Sequence[TrackedModel],
+        removed: Sequence[tuple[str, TrackedModel]],
+    ) -> None:
+        if not self._state.chats:
+            logger.debug("No chats to notify for Google model changes.")
+            return
+
+        added_message = ""
+        if added:
+            lines = "\n".join(
+                f"• {model.name}"
+                for model in added
+            )
+            added_message = f"🆕 New Google/Vertex models available:\n{lines}"
+
+        removed_message = ""
+        if removed:
+            lines = "\n".join(
+                f"• {model.name or identifier}"
+                for identifier, model in removed
+            )
+            removed_message = f"❌ Removed from Google catalog:\n{lines}"
+
+        message_parts = [part for part in (added_message, removed_message) if part]
+        if not message_parts:
+            return
+
+        message = "\n\n".join(message_parts)
+
+        for chat_id in list(self._state.chats):
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=message)
+            except Exception as exc:  # pragma: no cover - network failure
+                logger.warning("Failed to send Google model update to chat %s: %s", chat_id, exc)
 
     def run(self) -> None:
         logger.info(

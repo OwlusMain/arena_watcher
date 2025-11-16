@@ -38,6 +38,8 @@ class Config:
     state_path: Path = DEFAULT_STATE_PATH
     request_headers: Dict[str, Any] = field(default_factory=dict)
     request_cookies: Dict[str, Any] = field(default_factory=dict)
+    google_api_key: Optional[str] = None
+    google_poll_interval_seconds: Optional[int] = None
 
     @classmethod
     def load_from_env(cls) -> "Config":
@@ -62,6 +64,13 @@ class Config:
         headers = _load_json_env(os.environ.get("ARENA_REQUEST_HEADERS")) or {}
         cookies = _load_json_env(os.environ.get("ARENA_REQUEST_COOKIES")) or {}
 
+        google_api_key = (
+            os.environ.get("GOOGLE_API_KEY")
+            or os.environ.get("GENAI_API_KEY")
+            or os.environ.get("GEMINI_API_KEY")
+        )
+        google_poll_interval_seconds = os.environ.get("GOOGLE_POLL_INTERVAL_SECONDS")
+
         return cls(
             telegram_token=telegram_token,
             arena_models_url=arena_models_url,
@@ -71,4 +80,8 @@ class Config:
             state_path=state_path,
             request_headers=headers,
             request_cookies=cookies,
+            google_api_key=google_api_key,
+            google_poll_interval_seconds=int(google_poll_interval_seconds)
+            if google_poll_interval_seconds
+            else None,
         )

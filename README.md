@@ -34,6 +34,8 @@ Set the following environment variables before running `python main.py`:
 | `ARENA_REQUEST_COOKIES` | ❌ | JSON object encoded as a string for cookies that should be attached to each request. |
 | `POLL_INTERVAL_SECONDS` | ❌ | Polling cadence in seconds (default `300`). |
 | `STATE_PATH` | ❌ | File path for storing chat subscriptions and known models (`data/state.json` by default). |
+| `GOOGLE_API_KEY` / `GENAI_API_KEY` / `GEMINI_API_KEY` | ❌ | API key for Google Generative AI. When set, the bot also polls the Google catalog via the official SDK. |
+| `GOOGLE_POLL_INTERVAL_SECONDS` | ❌ | Polling cadence for the Google lookup (defaults to `POLL_INTERVAL_SECONDS`). |
 
 ### Example
 
@@ -50,6 +52,18 @@ export TELEGRAM_BOT_TOKEN="<token>"
 export ARENA_MODELS_URL="https://lmarena.ai/_next/data/<BUILD_ID>/en/arena.json"
 export ARENA_MODELS_JSON_PATH="pageProps,models"
 export ARENA_MODEL_ID_PATH="slug"
+python main.py
+```
+
+### Google/Vertex model tracking
+
+If you provide your Gemini/Google Generative AI API key, the bot will additionally use the official `google-genai` client (`client.models.list()`) to fetch model names (no capabilities are shown) and post when new models appear or existing ones disappear:
+
+```bash
+export GOOGLE_API_KEY="<api-key>"
+# or GENAI_API_KEY / GEMINI_API_KEY
+# Optional overrides:
+# export GOOGLE_POLL_INTERVAL_SECONDS="300"
 python main.py
 ```
 

@@ -47,6 +47,7 @@ class TrackedModel:
 @dataclass(slots=True)
 class WatcherState:
     known_models: Dict[str, TrackedModel] = field(default_factory=dict)
+    google_models: Dict[str, TrackedModel] = field(default_factory=dict)
     chats: Set[int] = field(default_factory=set)
 
     def to_json(self) -> Dict[str, Any]:
@@ -54,6 +55,10 @@ class WatcherState:
             "known_models": {
                 identifier: model.to_json()
                 for identifier, model in sorted(self.known_models.items())
+            },
+            "google_models": {
+                identifier: model.to_json()
+                for identifier, model in sorted(self.google_models.items())
             },
             "chats": sorted(self.chats),
         }
@@ -71,8 +76,18 @@ class WatcherState:
         else:
             known_models = {}
 
+        raw_google_models = data.get("google_models", {})
+        if isinstance(raw_google_models, dict):
+            google_models = {
+                str(identifier): TrackedModel.from_json(payload)
+                for identifier, payload in raw_google_models.items()
+            }
+        else:
+            google_models = {}
+
         return cls(
             known_models=known_models,
+            google_models=google_models,
             chats=set(int(chat) for chat in data.get("chats", [])),
         )
 
