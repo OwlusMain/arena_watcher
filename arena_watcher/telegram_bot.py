@@ -443,7 +443,7 @@ class ArenaWatcherBot:
                 f"• {model.name}"
                 for model in added
             )
-            added_message = f"🆕 New Google/Vertex models available:\n{lines}"
+            added_message = f"🆕 New Google AI models available:\n{lines}"
 
         removed_message = ""
         if removed:
@@ -451,7 +451,7 @@ class ArenaWatcherBot:
                 f"• {model.name or identifier}"
                 for identifier, model in removed
             )
-            removed_message = f"❌ Removed from Google catalog:\n{lines}"
+            removed_message = f"❌ Removed models from Google AI:\n{lines}"
 
         message_parts = [part for part in (added_message, removed_message) if part]
         if not message_parts:
