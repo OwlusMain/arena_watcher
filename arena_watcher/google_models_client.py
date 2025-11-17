@@ -36,6 +36,7 @@ class GoogleModelsClient:
             if not name:
                 logger.debug("Skipping Google model because it has no name: %r", model)
                 continue
+            clean_name = str(name).split("/")[-1]
             raw_payload = model.to_dict() if hasattr(model, "to_dict") else {"name": name}
-            entries.append(ModelEntry(identifier=str(name), name=str(name), raw=raw_payload))
+            entries.append(ModelEntry(identifier=clean_name, name=clean_name, raw=raw_payload))
         return entries

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from html import escape
 from typing import Any, Optional, Sequence
 
 from telegram import Update
@@ -347,7 +348,7 @@ class ArenaWatcherBot:
         def summarize(values: Optional[Sequence[str]]) -> str:
             if values is None:
                 return "n/a"
-            return ", ".join(values) if values else "none"
+            return ", ".join(self._escape(value) for value in values) if values else "none"
 
         input_summary = summarize(input_capabilities)
         output_summary = summarize(output_capabilities)
@@ -364,17 +365,17 @@ class ArenaWatcherBot:
             return ""
         return f" ({'; '.join(segments)})"
 
-    @staticmethod
     def _format_capability_delta(
+        self,
         label: str,
         added: Sequence[str],
         removed: Sequence[str],
     ) -> str:
         fragments = []
         if added:
-            fragments.append("+" + ", +".join(added))
+            fragments.append("+" + ", +".join(self._escape(item) for item in added))
         if removed:
-            fragments.append("-" + ", -".join(removed))
+            fragments.append("-" + ", -".join(self._escape(item) for item in removed))
         if not fragments:
             return ""
         return f"{label}: {'; '.join(fragments)}"
@@ -393,27 +394,28 @@ class ArenaWatcherBot:
         added_message = ""
         if added:
             lines = "\n".join(
-                f"• {model.name}{self._format_capabilities(model.input_capabilities, model.output_capabilities)}"
+                f"• {self._escape(model.name)}"
+                f"{self._format_capabilities(model.input_capabilities, model.output_capabilities)}"
                 for model in added
             )
-            added_message = f"🆕 New models on LMArena:\n{lines}"
+            added_message = f"<b>🆕 New models on LMArena:</b>\n{lines}"
 
         removed_message = ""
         if removed:
             lines = "\n".join(
-                f"• {model.name or identifier}"
+                f"• {self._escape(model.name or identifier)}"
                 f"{self._format_capabilities(model.input_capabilities, model.output_capabilities)}"
                 for identifier, model in removed
             )
-            removed_message = f"❌ Removed from LMArena:\n{lines}"
+            removed_message = f"<b>❌ Removed from LMArena:</b>\n{lines}"
 
         capability_message = ""
         if capability_updates:
             lines = "\n".join(
-                f"• {diff.model.name}{self._format_capability_change(diff)}"
+                f"• {self._escape(diff.model.name)}{self._format_capability_change(diff)}"
                 for diff in capability_updates
             )
-            capability_message = f"⚙️ Capability updates on LMArena:\n{lines}"
+            capability_message = f"<b>⚙️ Capability updates on LMArena:</b>\n{lines}"
 
         message_parts = [part for part in (added_message, removed_message, capability_message) if part]
         if not message_parts:
@@ -423,7 +425,7 @@ class ArenaWatcherBot:
 
         for chat_id in list(self._state.chats):
             try:
-                await context.bot.send_message(chat_id=chat_id, text=message)
+                await context.bot.send_message(chat_id=chat_id, text=message, parse_mode="HTML")
             except Exception as exc:  # pragma: no cover - network failure
                 logger.warning("Failed to send update to chat %s: %s", chat_id, exc)
 
@@ -440,18 +442,18 @@ class ArenaWatcherBot:
         added_message = ""
         if added:
             lines = "\n".join(
-                f"• {model.name}"
+                f"• {self._escape(model.name)}"
                 for model in added
             )
-            added_message = f"🆕 New Google AI models available:\n{lines}"
+            added_message = f"<b>🆕 New Google AI models available:</b>\n{lines}"
 
         removed_message = ""
         if removed:
             lines = "\n".join(
-                f"• {model.name or identifier}"
+                f"• {self._escape(model.name or identifier)}"
                 for identifier, model in removed
             )
-            removed_message = f"❌ Removed models from Google AI:\n{lines}"
+            removed_message = f"<b>❌ Removed models from Google AI:</b>\n{lines}"
 
         message_parts = [part for part in (added_message, removed_message) if part]
         if not message_parts:
@@ -461,9 +463,13 @@ class ArenaWatcherBot:
 
         for chat_id in list(self._state.chats):
             try:
-                await context.bot.send_message(chat_id=chat_id, text=message)
+                await context.bot.send_message(chat_id=chat_id, text=message, parse_mode="HTML")
             except Exception as exc:  # pragma: no cover - network failure
                 logger.warning("Failed to send Google model update to chat %s: %s", chat_id, exc)
+
+    @staticmethod
+    def _escape(value: str) -> str:
+        return escape(value, quote=False)
 
     def run(self) -> None:
         logger.info(
