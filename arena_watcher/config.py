@@ -56,6 +56,7 @@ class Config:
     openai_api_key: Optional[str] = None
     openai_poll_interval_seconds: Optional[int] = None
     admin_user_ids: List[int] = field(default_factory=list)
+    designarena_poll_interval_seconds: Optional[int] = None
 
     @classmethod
     def load_from_env(cls) -> "Config":
@@ -89,6 +90,7 @@ class Config:
         openai_api_key = os.environ.get("OPENAI_API_KEY")
         openai_poll_interval_seconds = os.environ.get("OPENAI_POLL_INTERVAL_SECONDS")
         admin_user_ids = _split_env_int_list(os.environ.get("ADMIN_USER_IDS"))
+        designarena_poll_interval_seconds = os.environ.get("DESIGNARENA_POLL_INTERVAL_SECONDS")
 
         return cls(
             telegram_token=telegram_token,
@@ -108,4 +110,7 @@ class Config:
             if openai_poll_interval_seconds
             else None,
             admin_user_ids=admin_user_ids,
+            designarena_poll_interval_seconds=int(designarena_poll_interval_seconds)
+            if designarena_poll_interval_seconds
+            else None,
         )

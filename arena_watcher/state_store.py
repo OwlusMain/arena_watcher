@@ -61,6 +61,7 @@ class WatcherState:
     known_models: Dict[str, TrackedModel] = field(default_factory=dict)
     google_models: Dict[str, TrackedModel] = field(default_factory=dict)
     openai_models: Dict[str, TrackedModel] = field(default_factory=dict)
+    designarena_models: Dict[str, TrackedModel] = field(default_factory=dict)
     chats: Set[int] = field(default_factory=set)
 
     def to_json(self) -> Dict[str, Any]:
@@ -76,6 +77,10 @@ class WatcherState:
             "openai_models": {
                 identifier: model.to_json()
                 for identifier, model in sorted(self.openai_models.items())
+            },
+            "designarena_models": {
+                identifier: model.to_json()
+                for identifier, model in sorted(self.designarena_models.items())
             },
             "chats": sorted(self.chats),
         }
@@ -111,10 +116,20 @@ class WatcherState:
         else:
             openai_models = {}
 
+        raw_designarena_models = data.get("designarena_models", {})
+        if isinstance(raw_designarena_models, dict):
+            designarena_models = {
+                str(identifier): TrackedModel.from_json(payload)
+                for identifier, payload in raw_designarena_models.items()
+            }
+        else:
+            designarena_models = {}
+
         return cls(
             known_models=known_models,
             google_models=google_models,
             openai_models=openai_models,
+            designarena_models=designarena_models,
             chats=set(int(chat) for chat in data.get("chats", [])),
         )
 

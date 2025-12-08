@@ -39,6 +39,7 @@ Set the following environment variables before running `python main.py`:
 | `OPENAI_API_KEY` | ❌ | API key for OpenAI. When set, the bot polls the OpenAI models API for additions/removals. |
 | `OPENAI_POLL_INTERVAL_SECONDS` | ❌ | Polling cadence for the OpenAI lookup (defaults to `POLL_INTERVAL_SECONDS`). |
 | `ADMIN_USER_IDS` | ❌ | Comma-separated Telegram user IDs allowed to manage model tags (e.g. `123,456`). |
+| `DESIGNARENA_POLL_INTERVAL_SECONDS` | ❌ | Polling cadence for the DesignArena lookup (defaults to `POLL_INTERVAL_SECONDS`). |
 
 ### Example
 
@@ -68,6 +69,10 @@ export OPENAI_API_KEY="<openai-key>"
 # export OPENAI_POLL_INTERVAL_SECONDS="300"
 python main.py
 ```
+
+### DesignArena model tracking
+
+The bot automatically polls the DesignArena model bundle (`designarena.ai`) to detect added/removed models. No credentials are required. You can adjust cadence with `DESIGNARENA_POLL_INTERVAL_SECONDS`.
 
 ### Google/Vertex model tracking
 

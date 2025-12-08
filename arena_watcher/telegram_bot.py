@@ -23,6 +23,7 @@ from .arena_client import ArenaClient, ArenaFetchError, ModelEntry
 from .config import Config
 from .google_models_client import GoogleModelFetchError, GoogleModelsClient
 from .openai_models_client import OpenAIModelFetchError, OpenAIModelsClient
+from .designarena_client import DesignArenaClient, DesignArenaFetchError
 from .state_store import StateStore, TrackedModel, WatcherState
 
 
@@ -66,11 +67,13 @@ class ArenaWatcherBot:
         state_store: StateStore,
         google_models_client: GoogleModelsClient | None = None,
         openai_models_client: OpenAIModelsClient | None = None,
+        designarena_client: DesignArenaClient | None = None,
     ) -> None:
         self._config = config
         self._arena_client = arena_client
         self._google_client = google_models_client
         self._openai_client = openai_models_client
+        self._designarena_client = designarena_client
         self._store = state_store
         self._state = self._store.load()
         self._state_lock = asyncio.Lock()
@@ -116,6 +119,14 @@ class ArenaWatcherBot:
                 or self._config.poll_interval_seconds,
                 first=10,
                 name="openai-model-poller",
+            )
+        if self._designarena_client:
+            job_queue.run_repeating(
+                self._poll_designarena_models,
+                interval=self._config.designarena_poll_interval_seconds
+                or self._config.poll_interval_seconds,
+                first=15,
+                name="designarena-model-poller",
             )
 
     async def _on_startup(self, _: Application) -> None:
@@ -192,6 +203,7 @@ class ArenaWatcherBot:
                 ("LMArena", self._state.known_models),
                 ("Google", self._state.google_models),
                 ("OpenAI", self._state.openai_models),
+                ("DesignArena", self._state.designarena_models),
             ]
             exact_matches: list[tuple[str, TrackedModel, dict[str, TrackedModel], str]] = []
             name_matches: list[tuple[str, TrackedModel, dict[str, TrackedModel], str]] = []
@@ -450,6 +462,51 @@ class ArenaWatcherBot:
                 removed=removed_models,
             )
 
+    async def _poll_designarena_models(self, context: CallbackContext) -> None:
+        if not self._designarena_client:
+            return
+
+        try:
+            models = self._designarena_client.fetch_models()
+        except DesignArenaFetchError as exc:
+            logger.warning("DesignArena models fetch failed: %s", exc)
+            return
+
+        logger.debug("Fetched %d models from DesignArena.", len(models))
+
+        async with self._state_lock:
+            previous = dict(self._state.designarena_models)
+            snapshots = {
+                entry.identifier: self._snapshot_designarena_model(entry, previous.get(entry.identifier))
+                for entry in models
+            }
+
+            added_ids = set(snapshots) - set(previous)
+            removed_ids = set(previous) - set(snapshots)
+
+            if not added_ids and not removed_ids:
+                logger.debug("No changes detected in DesignArena model list.")
+                return
+
+            added_models = sorted(
+                (snapshots[identifier] for identifier in added_ids),
+                key=lambda model: model.name.lower(),
+            )
+            removed_models = sorted(
+                ((identifier, previous[identifier]) for identifier in removed_ids),
+                key=lambda item: item[1].name.lower(),
+            )
+
+            self._state.designarena_models = snapshots
+            self._store.save(self._state)
+
+        if added_models or removed_models:
+            await self._notify_designarena_changes(
+                context,
+                added=added_models,
+                removed=removed_models,
+            )
+
     def _snapshot_model(self, entry: ModelEntry, existing: TrackedModel | None = None) -> TrackedModel:
         input_caps, output_caps = self._capability_lists(entry)
         return TrackedModel(
@@ -467,6 +524,15 @@ class ArenaWatcherBot:
         )
 
     def _snapshot_openai_model(self, entry: ModelEntry, existing: TrackedModel | None = None) -> TrackedModel:
+        return TrackedModel(
+            name=entry.name,
+            output_capabilities=None,
+            tag=existing.tag if existing else None,
+        )
+
+    def _snapshot_designarena_model(
+        self, entry: ModelEntry, existing: TrackedModel | None = None
+    ) -> TrackedModel:
         return TrackedModel(
             name=entry.name,
             output_capabilities=None,
@@ -697,6 +763,44 @@ class ArenaWatcherBot:
                 await context.bot.send_message(chat_id=chat_id, text=message, parse_mode="HTML")
             except Exception as exc:  # pragma: no cover - network failure
                 logger.warning("Failed to send OpenAI model update to chat %s: %s", chat_id, exc)
+
+    async def _notify_designarena_changes(
+        self,
+        context: CallbackContext,
+        added: Sequence[TrackedModel],
+        removed: Sequence[tuple[str, TrackedModel]],
+    ) -> None:
+        if not self._state.chats:
+            logger.debug("No chats to notify for DesignArena model changes.")
+            return
+
+        added_message = ""
+        if added:
+            lines = "\n".join(
+                f"• {self._format_model_name(model)}"
+                for model in added
+            )
+            added_message = f"<b>🆕 New DesignArena models available:</b>\n{lines}"
+
+        removed_message = ""
+        if removed:
+            lines = "\n".join(
+                f"• {self._format_model_name(model, identifier)}"
+                for identifier, model in removed
+            )
+            removed_message = f"<b>❌ Removed models from DesignArena:</b>\n{lines}"
+
+        message_parts = [part for part in (added_message, removed_message) if part]
+        if not message_parts:
+            return
+
+        message = "\n\n".join(message_parts)
+
+        for chat_id in list(self._state.chats):
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=message, parse_mode="HTML")
+            except Exception as exc:  # pragma: no cover - network failure
+                logger.warning("Failed to send DesignArena model update to chat %s: %s", chat_id, exc)
 
     async def _broadcast_tag_set(
         self,

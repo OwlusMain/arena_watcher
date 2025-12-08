@@ -5,6 +5,7 @@ import sys
 
 from arena_watcher.arena_client import ArenaClient
 from arena_watcher.config import Config
+from arena_watcher.designarena_client import DesignArenaClient, DesignArenaClientConfig
 from arena_watcher.google_models_client import GoogleModelsClient, GoogleModelsClientConfig
 from arena_watcher.openai_models_client import OpenAIModelsClient, OpenAIModelsClientConfig
 from arena_watcher.state_store import StateStore
@@ -47,8 +48,16 @@ def main() -> int:
                 api_key=config.openai_api_key,
             )
         )
+    designarena_client = DesignArenaClient(DesignArenaClientConfig())
     state_store = StateStore(config.state_path)
-    bot = ArenaWatcherBot(config, arena_client, state_store, google_client, openai_client)
+    bot = ArenaWatcherBot(
+        config,
+        arena_client,
+        state_store,
+        google_client,
+        openai_client,
+        designarena_client,
+    )
     bot.run()
     return 0
 
