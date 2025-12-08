@@ -184,6 +184,7 @@ class ArenaWatcherBot:
         updated_identifier: str | None = None
         ambiguous_matches: list[tuple[str, str]] = []
         target_source: str | None = None
+        previous_tag: str | None = None
 
         async with self._state_lock:
             target_lower = target_key.lower()
@@ -215,6 +216,7 @@ class ArenaWatcherBot:
 
             if chosen:
                 identifier, model, container, source_name = chosen
+                previous_tag = model.tag
                 model.tag = new_tag
                 container[identifier] = model
                 self._store.save(self._state)
@@ -257,6 +259,13 @@ class ArenaWatcherBot:
                 text=f"✅ Tag added to {label} [{target_source}].",
                 parse_mode="HTML",
             )
+            if new_tag != previous_tag:
+                await self._broadcast_tag_set(
+                    context,
+                    model=updated_model,
+                    identifier=updated_identifier,
+                    source=target_source or "unknown",
+                )
         else:
             await context.bot.send_message(
                 chat_id=chat_id,
@@ -688,6 +697,26 @@ class ArenaWatcherBot:
                 await context.bot.send_message(chat_id=chat_id, text=message, parse_mode="HTML")
             except Exception as exc:  # pragma: no cover - network failure
                 logger.warning("Failed to send OpenAI model update to chat %s: %s", chat_id, exc)
+
+    async def _broadcast_tag_set(
+        self,
+        context: CallbackContext,
+        model: TrackedModel,
+        identifier: str,
+        source: str,
+    ) -> None:
+        if not self._state.chats:
+            logger.debug("No chats to notify for tag updates.")
+            return
+
+        label = self._format_model_name(model, identifier)
+        message = f"🏷️ New tag added for {label} [{source}]."
+
+        for chat_id in list(self._state.chats):
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=message, parse_mode="HTML")
+            except Exception as exc:  # pragma: no cover - network failure
+                logger.warning("Failed to send tag update to chat %s: %s", chat_id, exc)
 
     def _is_admin(self, user_id: int | None) -> bool:
         if user_id is None:
