@@ -16,6 +16,19 @@ def _split_env_list(value: Optional[str]) -> List[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _split_env_int_list(value: Optional[str]) -> List[int]:
+    raw_values = _split_env_list(value)
+    integers: List[int] = []
+    for raw in raw_values:
+        try:
+            integers.append(int(raw))
+        except ValueError as exc:
+            raise ValueError(
+                f"Expected ADMIN_USER_IDS to contain integers but got {raw!r}."
+            ) from exc
+    return integers
+
+
 def _load_json_env(value: Optional[str]) -> Optional[Dict[str, Any]]:
     if not value:
         return None
@@ -42,6 +55,7 @@ class Config:
     google_poll_interval_seconds: Optional[int] = None
     openai_api_key: Optional[str] = None
     openai_poll_interval_seconds: Optional[int] = None
+    admin_user_ids: List[int] = field(default_factory=list)
 
     @classmethod
     def load_from_env(cls) -> "Config":
@@ -74,6 +88,7 @@ class Config:
         google_poll_interval_seconds = os.environ.get("GOOGLE_POLL_INTERVAL_SECONDS")
         openai_api_key = os.environ.get("OPENAI_API_KEY")
         openai_poll_interval_seconds = os.environ.get("OPENAI_POLL_INTERVAL_SECONDS")
+        admin_user_ids = _split_env_int_list(os.environ.get("ADMIN_USER_IDS"))
 
         return cls(
             telegram_token=telegram_token,
@@ -92,4 +107,5 @@ class Config:
             openai_poll_interval_seconds=int(openai_poll_interval_seconds)
             if openai_poll_interval_seconds
             else None,
+            admin_user_ids=admin_user_ids,
         )

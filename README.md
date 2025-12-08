@@ -38,6 +38,7 @@ Set the following environment variables before running `python main.py`:
 | `GOOGLE_POLL_INTERVAL_SECONDS` | ❌ | Polling cadence for the Google lookup (defaults to `POLL_INTERVAL_SECONDS`). |
 | `OPENAI_API_KEY` | ❌ | API key for OpenAI. When set, the bot polls the OpenAI models API for additions/removals. |
 | `OPENAI_POLL_INTERVAL_SECONDS` | ❌ | Polling cadence for the OpenAI lookup (defaults to `POLL_INTERVAL_SECONDS`). |
+| `ADMIN_USER_IDS` | ❌ | Comma-separated Telegram user IDs allowed to manage model tags (e.g. `123,456`). |
 
 ### Example
 
@@ -89,6 +90,17 @@ python main.py
 3. Run `/start` to subscribe the chat.
 4. The bot polls the configured endpoint at the specified interval and posts updates when models are added or removed.
 5. Use `/stop` to unsubscribe the chat.
+
+### Model tagging (admin only)
+
+Configure `ADMIN_USER_IDS` to allow specific Telegram users to label models. Tags appear in italics inside parentheses after the model name in notifications.
+
+```text
+/tag <identifier|name> <tag text>  # add/update a tag
+/tag <identifier|name>             # clear the tag
+```
+
+Example: `/tag gemini-2.5-flash Gemini 3 Flash` produces `gemini-2.5-flash <i>(Gemini 3 Flash)</i>` in updates.
 
 ## Development Notes
 

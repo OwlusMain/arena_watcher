@@ -19,17 +19,28 @@ def _normalize_capability_list(value: Any) -> Optional[List[str]]:
     return None
 
 
+def _normalize_tag(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return cleaned or None
+    return str(value)
+
+
 @dataclass(slots=True)
 class TrackedModel:
     name: str
     input_capabilities: Optional[List[str]] = None
     output_capabilities: Optional[List[str]] = None
+    tag: Optional[str] = None
 
     def to_json(self) -> Dict[str, Any]:
         return {
             "name": self.name,
             "input_capabilities": self.input_capabilities,
             "output_capabilities": self.output_capabilities,
+            "tag": self.tag,
         }
 
     @classmethod
@@ -41,6 +52,7 @@ class TrackedModel:
             name=name,
             input_capabilities=_normalize_capability_list(data.get("input_capabilities")),
             output_capabilities=_normalize_capability_list(data.get("output_capabilities")),
+            tag=_normalize_tag(data.get("tag")),
         )
 
 

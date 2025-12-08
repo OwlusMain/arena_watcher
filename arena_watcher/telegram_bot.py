@@ -75,6 +75,7 @@ class ArenaWatcherBot:
         self._state = self._store.load()
         self._state_lock = asyncio.Lock()
         self._last_snapshot: dict[str, TrackedModel] = dict(self._state.known_models)
+        self._admin_user_ids: set[int] = set(config.admin_user_ids)
         self._app: Application = (
             ApplicationBuilder()
             .token(config.telegram_token)
@@ -85,6 +86,7 @@ class ArenaWatcherBot:
         )
         self._app.add_handler(CommandHandler("start", self._handle_start))
         self._app.add_handler(CommandHandler("stop", self._handle_stop))
+        self._app.add_handler(CommandHandler("tag", self._handle_tag))
         self._app.add_handler(
             ChatMemberHandler(self._handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER)
         )
@@ -153,6 +155,115 @@ class ArenaWatcherBot:
                     text="This chat was not subscribed to updates.",
                 )
 
+    async def _handle_tag(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        chat = update.effective_chat
+        user = update.effective_user
+        if not chat or not user:
+            return
+        chat_id = chat.id
+        if not self._is_admin(user.id):
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="You are not allowed to set model tags.",
+            )
+            return
+
+        if not context.args:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="Usage: /tag <identifier|name> <tag text>. Send an empty tag to clear it.",
+            )
+            return
+
+        target_key = context.args[0]
+        provided_tag = " ".join(context.args[1:]).strip()
+        new_tag = provided_tag or None
+
+        status: str = "not_found"
+        updated_model: TrackedModel | None = None
+        updated_identifier: str | None = None
+        ambiguous_matches: list[tuple[str, str]] = []
+        target_source: str | None = None
+
+        async with self._state_lock:
+            target_lower = target_key.lower()
+            sources: list[tuple[str, dict[str, TrackedModel]]] = [
+                ("LMArena", self._state.known_models),
+                ("Google", self._state.google_models),
+                ("OpenAI", self._state.openai_models),
+            ]
+            exact_matches: list[tuple[str, TrackedModel, dict[str, TrackedModel], str]] = []
+            name_matches: list[tuple[str, TrackedModel, dict[str, TrackedModel], str]] = []
+            for source_name, container in sources:
+                for identifier, model in container.items():
+                    if identifier == target_key:
+                        exact_matches.append((identifier, model, container, source_name))
+                    elif model.name.lower() == target_lower:
+                        name_matches.append((identifier, model, container, source_name))
+
+            chosen: tuple[str, TrackedModel, dict[str, TrackedModel], str] | None = None
+            if len(exact_matches) == 1:
+                chosen = exact_matches[0]
+            elif len(exact_matches) > 1:
+                ambiguous_matches = [(identifier, source) for identifier, _, _, source in exact_matches]
+                status = "ambiguous"
+            elif len(name_matches) == 1:
+                chosen = name_matches[0]
+            elif len(name_matches) > 1:
+                ambiguous_matches = [(identifier, source) for identifier, _, _, source in name_matches]
+                status = "ambiguous"
+
+            if chosen:
+                identifier, model, container, source_name = chosen
+                model.tag = new_tag
+                container[identifier] = model
+                self._store.save(self._state)
+                updated_model = model
+                updated_identifier = identifier
+                target_source = source_name
+                status = "updated"
+
+        if status == "not_found":
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"Could not find a model matching {self._escape(target_key)}.",
+            )
+            return
+
+        if status == "ambiguous":
+            lines = "\n".join(
+                f"• {self._escape(identifier)} ({source})" for identifier, source in ambiguous_matches
+            )
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    "Multiple models matched that key. Please retry with an exact identifier:\n"
+                    f"{lines}"
+                ),
+            )
+            return
+
+        if not updated_model or not updated_identifier:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="No model was updated.",
+            )
+            return
+
+        label = self._format_model_name(updated_model, updated_identifier)
+        if new_tag:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"✅ Tag added to {label} [{target_source}].",
+                parse_mode="HTML",
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"Tag cleared for {label} [{target_source}].",
+                parse_mode="HTML",
+            )
+
     async def _handle_my_chat_member(
         self,
         update: Update,
@@ -199,13 +310,12 @@ class ArenaWatcherBot:
 
         logger.debug("Fetched %d models from arena.", len(models))
 
-        snapshots = {
-            entry.identifier: self._snapshot_model(entry)
-            for entry in models
-        }
-
         async with self._state_lock:
             previous = dict(self._state.known_models)
+            snapshots = {
+                entry.identifier: self._snapshot_model(entry, previous.get(entry.identifier))
+                for entry in models
+            }
             self._last_snapshot = snapshots
 
             added_ids = set(snapshots) - set(previous)
@@ -253,10 +363,12 @@ class ArenaWatcherBot:
 
         logger.debug("Fetched %d models from Google.", len(models))
 
-        snapshots = {entry.identifier: self._snapshot_google_model(entry) for entry in models}
-
         async with self._state_lock:
             previous = dict(self._state.google_models)
+            snapshots = {
+                entry.identifier: self._snapshot_google_model(entry, previous.get(entry.identifier))
+                for entry in models
+            }
 
             added_ids = set(snapshots) - set(previous)
             removed_ids = set(previous) - set(snapshots)
@@ -296,10 +408,12 @@ class ArenaWatcherBot:
 
         logger.debug("Fetched %d models from OpenAI.", len(models))
 
-        snapshots = {entry.identifier: self._snapshot_openai_model(entry) for entry in models}
-
         async with self._state_lock:
             previous = dict(self._state.openai_models)
+            snapshots = {
+                entry.identifier: self._snapshot_openai_model(entry, previous.get(entry.identifier))
+                for entry in models
+            }
 
             added_ids = set(snapshots) - set(previous)
             removed_ids = set(previous) - set(snapshots)
@@ -327,24 +441,27 @@ class ArenaWatcherBot:
                 removed=removed_models,
             )
 
-    def _snapshot_model(self, entry: ModelEntry) -> TrackedModel:
+    def _snapshot_model(self, entry: ModelEntry, existing: TrackedModel | None = None) -> TrackedModel:
         input_caps, output_caps = self._capability_lists(entry)
         return TrackedModel(
             name=entry.name,
             input_capabilities=input_caps,
             output_capabilities=output_caps,
+            tag=existing.tag if existing else None,
         )
 
-    def _snapshot_google_model(self, entry: ModelEntry) -> TrackedModel:
+    def _snapshot_google_model(self, entry: ModelEntry, existing: TrackedModel | None = None) -> TrackedModel:
         return TrackedModel(
             name=entry.name,
             output_capabilities=None,
+            tag=existing.tag if existing else None,
         )
 
-    def _snapshot_openai_model(self, entry: ModelEntry) -> TrackedModel:
+    def _snapshot_openai_model(self, entry: ModelEntry, existing: TrackedModel | None = None) -> TrackedModel:
         return TrackedModel(
             name=entry.name,
             output_capabilities=None,
+            tag=existing.tag if existing else None,
         )
 
     @staticmethod
@@ -396,6 +513,13 @@ class ArenaWatcherBot:
         if not isinstance(node, dict):
             return []
         return [str(key) for key, value in node.items() if value]
+
+    def _format_model_name(self, model: TrackedModel, fallback_identifier: str | None = None) -> str:
+        base_name = model.name or fallback_identifier or "unknown"
+        formatted = self._escape(base_name)
+        if model.tag:
+            formatted += f" <i>({self._escape(model.tag)})</i>"
+        return formatted
 
     def _format_capabilities(
         self,
@@ -454,7 +578,7 @@ class ArenaWatcherBot:
         added_message = ""
         if added:
             lines = "\n".join(
-                f"• {self._escape(model.name)}"
+                f"• {self._format_model_name(model)}"
                 f"{self._format_capabilities(model.input_capabilities, model.output_capabilities)}"
                 for model in added
             )
@@ -463,7 +587,7 @@ class ArenaWatcherBot:
         removed_message = ""
         if removed:
             lines = "\n".join(
-                f"• {self._escape(model.name or identifier)}"
+                f"• {self._format_model_name(model, identifier)}"
                 f"{self._format_capabilities(model.input_capabilities, model.output_capabilities)}"
                 for identifier, model in removed
             )
@@ -472,7 +596,7 @@ class ArenaWatcherBot:
         capability_message = ""
         if capability_updates:
             lines = "\n".join(
-                f"• {self._escape(diff.model.name)}{self._format_capability_change(diff)}"
+                f"• {self._format_model_name(diff.model)}{self._format_capability_change(diff)}"
                 for diff in capability_updates
             )
             capability_message = f"<b>⚙️ Capability updates on LMArena:</b>\n{lines}"
@@ -502,7 +626,7 @@ class ArenaWatcherBot:
         added_message = ""
         if added:
             lines = "\n".join(
-                f"• {self._escape(model.name)}"
+                f"• {self._format_model_name(model)}"
                 for model in added
             )
             added_message = f"<b>🆕 New Google AI models available:</b>\n{lines}"
@@ -510,7 +634,7 @@ class ArenaWatcherBot:
         removed_message = ""
         if removed:
             lines = "\n".join(
-                f"• {self._escape(model.name or identifier)}"
+                f"• {self._format_model_name(model, identifier)}"
                 for identifier, model in removed
             )
             removed_message = f"<b>❌ Removed models from Google AI:</b>\n{lines}"
@@ -540,7 +664,7 @@ class ArenaWatcherBot:
         added_message = ""
         if added:
             lines = "\n".join(
-                f"• {self._escape(model.name)}"
+                f"• {self._format_model_name(model)}"
                 for model in added
             )
             added_message = f"<b>🆕 New OpenAI API models available:</b>\n{lines}"
@@ -548,7 +672,7 @@ class ArenaWatcherBot:
         removed_message = ""
         if removed:
             lines = "\n".join(
-                f"• {self._escape(model.name or identifier)}"
+                f"• {self._format_model_name(model, identifier)}"
                 for identifier, model in removed
             )
             removed_message = f"<b>❌ Removed models from OpenAI API:</b>\n{lines}"
@@ -564,6 +688,11 @@ class ArenaWatcherBot:
                 await context.bot.send_message(chat_id=chat_id, text=message, parse_mode="HTML")
             except Exception as exc:  # pragma: no cover - network failure
                 logger.warning("Failed to send OpenAI model update to chat %s: %s", chat_id, exc)
+
+    def _is_admin(self, user_id: int | None) -> bool:
+        if user_id is None:
+            return False
+        return user_id in self._admin_user_ids
 
     @staticmethod
     def _escape(value: str) -> str:
