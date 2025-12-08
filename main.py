@@ -6,6 +6,7 @@ import sys
 from arena_watcher.arena_client import ArenaClient
 from arena_watcher.config import Config
 from arena_watcher.google_models_client import GoogleModelsClient, GoogleModelsClientConfig
+from arena_watcher.openai_models_client import OpenAIModelsClient, OpenAIModelsClientConfig
 from arena_watcher.state_store import StateStore
 from arena_watcher.telegram_bot import ArenaWatcherBot
 
@@ -39,8 +40,15 @@ def main() -> int:
                 api_key=config.google_api_key,
             )
         )
+    openai_client = None
+    if config.openai_api_key:
+        openai_client = OpenAIModelsClient(
+            OpenAIModelsClientConfig(
+                api_key=config.openai_api_key,
+            )
+        )
     state_store = StateStore(config.state_path)
-    bot = ArenaWatcherBot(config, arena_client, state_store, google_client)
+    bot = ArenaWatcherBot(config, arena_client, state_store, google_client, openai_client)
     bot.run()
     return 0
 

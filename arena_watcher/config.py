@@ -40,6 +40,8 @@ class Config:
     request_cookies: Dict[str, Any] = field(default_factory=dict)
     google_api_key: Optional[str] = None
     google_poll_interval_seconds: Optional[int] = None
+    openai_api_key: Optional[str] = None
+    openai_poll_interval_seconds: Optional[int] = None
 
     @classmethod
     def load_from_env(cls) -> "Config":
@@ -70,6 +72,8 @@ class Config:
             or os.environ.get("GEMINI_API_KEY")
         )
         google_poll_interval_seconds = os.environ.get("GOOGLE_POLL_INTERVAL_SECONDS")
+        openai_api_key = os.environ.get("OPENAI_API_KEY")
+        openai_poll_interval_seconds = os.environ.get("OPENAI_POLL_INTERVAL_SECONDS")
 
         return cls(
             telegram_token=telegram_token,
@@ -83,5 +87,9 @@ class Config:
             google_api_key=google_api_key,
             google_poll_interval_seconds=int(google_poll_interval_seconds)
             if google_poll_interval_seconds
+            else None,
+            openai_api_key=openai_api_key,
+            openai_poll_interval_seconds=int(openai_poll_interval_seconds)
+            if openai_poll_interval_seconds
             else None,
         )

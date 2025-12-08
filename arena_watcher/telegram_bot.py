@@ -22,6 +22,7 @@ from telegram.ext import (
 from .arena_client import ArenaClient, ArenaFetchError, ModelEntry
 from .config import Config
 from .google_models_client import GoogleModelFetchError, GoogleModelsClient
+from .openai_models_client import OpenAIModelFetchError, OpenAIModelsClient
 from .state_store import StateStore, TrackedModel, WatcherState
 
 
@@ -64,10 +65,12 @@ class ArenaWatcherBot:
         arena_client: ArenaClient,
         state_store: StateStore,
         google_models_client: GoogleModelsClient | None = None,
+        openai_models_client: OpenAIModelsClient | None = None,
     ) -> None:
         self._config = config
         self._arena_client = arena_client
         self._google_client = google_models_client
+        self._openai_client = openai_models_client
         self._store = state_store
         self._state = self._store.load()
         self._state_lock = asyncio.Lock()
@@ -103,6 +106,14 @@ class ArenaWatcherBot:
                 or self._config.poll_interval_seconds,
                 first=5,
                 name="google-model-poller",
+            )
+        if self._openai_client:
+            job_queue.run_repeating(
+                self._poll_openai_models,
+                interval=self._config.openai_poll_interval_seconds
+                or self._config.poll_interval_seconds,
+                first=10,
+                name="openai-model-poller",
             )
 
     async def _on_startup(self, _: Application) -> None:
@@ -273,6 +284,49 @@ class ArenaWatcherBot:
                 removed=removed_models,
             )
 
+    async def _poll_openai_models(self, context: CallbackContext) -> None:
+        if not self._openai_client:
+            return
+
+        try:
+            models = self._openai_client.fetch_models()
+        except OpenAIModelFetchError as exc:
+            logger.warning("OpenAI models fetch failed: %s", exc)
+            return
+
+        logger.debug("Fetched %d models from OpenAI.", len(models))
+
+        snapshots = {entry.identifier: self._snapshot_openai_model(entry) for entry in models}
+
+        async with self._state_lock:
+            previous = dict(self._state.openai_models)
+
+            added_ids = set(snapshots) - set(previous)
+            removed_ids = set(previous) - set(snapshots)
+
+            if not added_ids and not removed_ids:
+                logger.debug("No changes detected in OpenAI model list.")
+                return
+
+            added_models = sorted(
+                (snapshots[identifier] for identifier in added_ids),
+                key=lambda model: model.name.lower(),
+            )
+            removed_models = sorted(
+                ((identifier, previous[identifier]) for identifier in removed_ids),
+                key=lambda item: item[1].name.lower(),
+            )
+
+            self._state.openai_models = snapshots
+            self._store.save(self._state)
+
+        if added_models or removed_models:
+            await self._notify_openai_changes(
+                context,
+                added=added_models,
+                removed=removed_models,
+            )
+
     def _snapshot_model(self, entry: ModelEntry) -> TrackedModel:
         input_caps, output_caps = self._capability_lists(entry)
         return TrackedModel(
@@ -282,6 +336,12 @@ class ArenaWatcherBot:
         )
 
     def _snapshot_google_model(self, entry: ModelEntry) -> TrackedModel:
+        return TrackedModel(
+            name=entry.name,
+            output_capabilities=None,
+        )
+
+    def _snapshot_openai_model(self, entry: ModelEntry) -> TrackedModel:
         return TrackedModel(
             name=entry.name,
             output_capabilities=None,
@@ -466,6 +526,44 @@ class ArenaWatcherBot:
                 await context.bot.send_message(chat_id=chat_id, text=message, parse_mode="HTML")
             except Exception as exc:  # pragma: no cover - network failure
                 logger.warning("Failed to send Google model update to chat %s: %s", chat_id, exc)
+
+    async def _notify_openai_changes(
+        self,
+        context: CallbackContext,
+        added: Sequence[TrackedModel],
+        removed: Sequence[tuple[str, TrackedModel]],
+    ) -> None:
+        if not self._state.chats:
+            logger.debug("No chats to notify for OpenAI model changes.")
+            return
+
+        added_message = ""
+        if added:
+            lines = "\n".join(
+                f"• {self._escape(model.name)}"
+                for model in added
+            )
+            added_message = f"<b>🆕 New OpenAI API models available:</b>\n{lines}"
+
+        removed_message = ""
+        if removed:
+            lines = "\n".join(
+                f"• {self._escape(model.name or identifier)}"
+                for identifier, model in removed
+            )
+            removed_message = f"<b>❌ Removed models from OpenAI API:</b>\n{lines}"
+
+        message_parts = [part for part in (added_message, removed_message) if part]
+        if not message_parts:
+            return
+
+        message = "\n\n".join(message_parts)
+
+        for chat_id in list(self._state.chats):
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=message, parse_mode="HTML")
+            except Exception as exc:  # pragma: no cover - network failure
+                logger.warning("Failed to send OpenAI model update to chat %s: %s", chat_id, exc)
 
     @staticmethod
     def _escape(value: str) -> str:

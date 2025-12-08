@@ -36,6 +36,8 @@ Set the following environment variables before running `python main.py`:
 | `STATE_PATH` | ❌ | File path for storing chat subscriptions and known models (`data/state.json` by default). |
 | `GOOGLE_API_KEY` / `GENAI_API_KEY` / `GEMINI_API_KEY` | ❌ | API key for Google Generative AI. When set, the bot also polls the Google catalog via the official SDK. |
 | `GOOGLE_POLL_INTERVAL_SECONDS` | ❌ | Polling cadence for the Google lookup (defaults to `POLL_INTERVAL_SECONDS`). |
+| `OPENAI_API_KEY` | ❌ | API key for OpenAI. When set, the bot polls the OpenAI models API for additions/removals. |
+| `OPENAI_POLL_INTERVAL_SECONDS` | ❌ | Polling cadence for the OpenAI lookup (defaults to `POLL_INTERVAL_SECONDS`). |
 
 ### Example
 
@@ -52,6 +54,17 @@ export TELEGRAM_BOT_TOKEN="<token>"
 export ARENA_MODELS_URL="https://lmarena.ai/_next/data/<BUILD_ID>/en/arena.json"
 export ARENA_MODELS_JSON_PATH="pageProps,models"
 export ARENA_MODEL_ID_PATH="slug"
+python main.py
+```
+
+### OpenAI model tracking
+
+If you provide an OpenAI API key, the bot will call `client.models.list()` and announce when OpenAI adds or removes models:
+
+```bash
+export OPENAI_API_KEY="<openai-key>"
+# Optional overrides:
+# export OPENAI_POLL_INTERVAL_SECONDS="300"
 python main.py
 ```
 

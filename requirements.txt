@@ -3,3 +3,4 @@ cloudscraper>=1.2
 python-telegram-bot[job-queue]
 python-telegram-bot[rate-limiter]
 google-genai>=1.47.0
+openai>=1.60.0
