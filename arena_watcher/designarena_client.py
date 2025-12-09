@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import List
+from typing import Iterable, List, Set
 from urllib.parse import urljoin
 
 import requests
@@ -20,18 +20,24 @@ class DesignArenaFetchError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class DesignArenaClientConfig:
     base_url: str = "https://www.designarena.ai/"
-    bundle_path_pattern: str = r"/?_next/static/chunks/4529-[A-Za-z0-9-]+\\.js[^\"'\\s>]*"
 
 
 class DesignArenaClient:
     def __init__(self, config: DesignArenaClientConfig | None = None) -> None:
         self._config = config or DesignArenaClientConfig()
         self._mapping_pattern = re.compile(r'id:"([^"]+)"[^}]*?displayName:"([^"]+)"', re.DOTALL)
-        self._bundle_path_regex = re.compile(self._config.bundle_path_pattern)
+        # Match script src values for .js files (with optional query strings), case-insensitive.
+        self._script_src_regex = re.compile(r'src=["\']([^"\']+\.js[^"\']*)["\']', re.IGNORECASE)
+        self._session = requests.Session()
+        self._session.headers.update(
+            {
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+            }
+        )
 
     def fetch_models(self) -> List[ModelEntry]:
-        bundle_url = self._discover_bundle_url()
-        text = self._fetch_text(bundle_url)
+        bundle_url, text = self._fetch_bundle_with_mapping()
         mapping_start = text.find("let n=")
         if mapping_start == -1:
             raise DesignArenaFetchError("DesignArena bundle did not contain the expected mapping.")
@@ -50,13 +56,13 @@ class DesignArenaClient:
             entries.append(ModelEntry(identifier=identifier, name=display_name, raw={"id": identifier, "name": display_name}))
         return entries
 
-    def _discover_bundle_url(self) -> str:
+    def _fetch_bundle_with_mapping(self) -> tuple[str, str]:
         """
-        Fetch the DesignArena homepage and extract the hashed bundle path that contains the model mapping.
-        Falls back to the Next.js build manifest if the bundle is not found directly in the HTML.
+        Find and fetch the JS bundle that contains the model mapping by scanning all candidate
+        script URLs from the homepage and Next.js build manifest.
         """
         try:
-            response = requests.get(self._config.base_url, timeout=30)
+            response = self._session.get(self._config.base_url, timeout=30)
         except Exception as exc:  # pragma: no cover - network failure
             raise DesignArenaFetchError(f"Failed to reach {self._config.base_url}: {exc}") from exc
 
@@ -66,25 +72,52 @@ class DesignArenaClient:
             )
 
         html = response.text or ""
-        path = self._extract_bundle_path(html)
-        if path:
-            return urljoin(self._config.base_url, path)
+        print(html)
+        candidates: Set[str] = set(self._extract_script_urls(html))
 
         manifest_url = self._extract_manifest_url(html)
         if manifest_url:
             manifest_text = self._fetch_text(urljoin(self._config.base_url, manifest_url))
-            print(manifest_text)
-            path = self._extract_bundle_path(manifest_text)
-            if path:
-                return urljoin(self._config.base_url, path)
+            candidates.update(self._extract_script_urls(manifest_text))
+
+        if not candidates:
+            # Retry with a fresh one-off request (matches the manual repro) in case session headers/cookies
+            # influenced the response content.
+            try:
+                fallback_html = requests.get(self._config.base_url, timeout=30).text
+                candidates.update(self._extract_script_urls(fallback_html))
+            except Exception:
+                pass
+
+        tried: list[str] = []
+        if not candidates:
+            raise DesignArenaFetchError("No script candidates found in DesignArena HTML.")
+
+        for path in candidates:
+            url = urljoin(self._config.base_url, path)
+            try:
+                text = self._fetch_text(url)
+            except DesignArenaFetchError:
+                tried.append(url)
+                continue
+            if (
+                "open_source:!" in text
+            ):
+                mapping_pos = text.find("let n=")
+                brace_pos = text.find("{", mapping_pos) if mapping_pos != -1 else -1
+                if mapping_pos != -1 and brace_pos != -1:
+                    return url, text
+            tried.append(url)
 
         raise DesignArenaFetchError(
-            "Could not locate DesignArena model bundle in the homepage HTML or manifest."
+            "Could not locate DesignArena model bundle after checking scripts. Tried: "
+            + ", ".join(tried[:5])
+            + ("..." if len(tried) > 5 else "")
         )
 
     def _fetch_text(self, url: str) -> str:
         try:
-            response = requests.get(url, timeout=30)
+            response = self._session.get(url, timeout=30)
         except Exception as exc:  # pragma: no cover - network failure
             raise DesignArenaFetchError(f"Failed to reach {url}: {exc}") from exc
 
@@ -94,33 +127,29 @@ class DesignArenaClient:
             )
         return response.text
 
-    def _extract_bundle_path(self, text: str) -> str | None:
-        match = self._bundle_path_regex.search(text)
-        if match:
-            path = match.group(0)
-            if not path.startswith("/"):
+    def _extract_script_urls(self, text: str) -> Iterable[str]:
+        # Explicit script tags
+        for match in self._script_src_regex.finditer(text):
+            path = match.group(1)
+            if path.startswith("//"):
+                path = "https:" + path
+            if not path.startswith(("http://", "https://", "/")):
                 path = "/" + path
-            if "/_next/" not in path:
-                path = "/_next" + path
-            return path
+            yield path
 
-        # Fallback heuristic: locate the chunk name manually when regex misses (e.g., minified HTML attributes)
-        for marker in ("_next/static/chunks/4529-", "static/chunks/4529-"):
-            idx = text.find(marker)
-            if idx != -1:
-                end = text.find(".js", idx)
-                if end != -1:
-                    end += 3
-                    # include query string if present
-                    while end < len(text) and text[end] not in "\"'\\s><":
-                        end += 1
-                    path = text[idx:end]
-                    if not path.startswith("/"):
-                        path = "/" + path
-                    if "/_next/" not in path:
-                        path = "/_next" + path
-                    return path
-        return None
+        # Fallback: any quoted .js reference in the text
+        for match in re.finditer(r'["\']([^"\']+\.js[^"\']*)["\']', text):
+            path = match.group(1)
+            if path.startswith("//"):
+                path = "https:" + path
+            if not path.startswith(("http://", "https://", "/")):
+                path = "/" + path
+            yield path
+
+        # Last resort: loose scan for _next/static JS paths even if unquoted
+        for match in re.finditer(r'/_next/static[^\\s><"\']+\\.js[^\\s><"\']*', text):
+            path = match.group(0)
+            yield path
 
     def _extract_manifest_url(self, html: str) -> str | None:
         """
