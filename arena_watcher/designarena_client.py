@@ -72,7 +72,6 @@ class DesignArenaClient:
             )
 
         html = response.text or ""
-        print(html)
         candidates: Set[str] = set(self._extract_script_urls(html))
 
         manifest_url = self._extract_manifest_url(html)
