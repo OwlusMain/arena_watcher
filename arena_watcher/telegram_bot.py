@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from html import escape
 from typing import Any, Optional, Sequence
@@ -322,6 +323,80 @@ class ArenaWatcherBot:
                     self._state.chats.remove(chat_id)
                     self._store.save(self._state)
 
+    def _apply_removal_waitlist(
+        self,
+        source_key: str,
+        previous: dict[str, TrackedModel],
+        api_snapshots: dict[str, TrackedModel],
+    ) -> tuple[dict[str, TrackedModel], set[str], set[str], bool]:
+        waitlist_seconds = float(self._config.removal_waitlist_seconds)
+        waitlist_updated = False
+        api_added_ids = set(api_snapshots) - set(previous)
+        api_removed_ids = set(previous) - set(api_snapshots)
+
+        if waitlist_seconds <= 0:
+            if source_key in self._state.removal_waitlist:
+                self._state.removal_waitlist.pop(source_key, None)
+                waitlist_updated = True
+            return api_snapshots, api_added_ids, api_removed_ids, waitlist_updated
+
+        now = time.time()
+        existing_waitlist = self._state.removal_waitlist.get(source_key)
+        if existing_waitlist is None:
+            waitlist: dict[str, float] = {}
+        elif isinstance(existing_waitlist, dict):
+            waitlist = {}
+            for identifier, timestamp in existing_waitlist.items():
+                try:
+                    waitlist[str(identifier)] = float(timestamp)
+                except (TypeError, ValueError):
+                    continue
+        else:
+            waitlist = {}
+            waitlist_updated = True
+
+        for identifier in list(waitlist):
+            if identifier in api_snapshots:
+                waitlist.pop(identifier, None)
+                waitlist_updated = True
+
+        effective_snapshots = dict(api_snapshots)
+        if api_removed_ids and not api_added_ids:
+            for identifier in api_removed_ids:
+                if identifier in previous:
+                    effective_snapshots[identifier] = previous[identifier]
+                if identifier not in waitlist:
+                    waitlist[identifier] = now
+                    waitlist_updated = True
+        else:
+            for identifier in api_removed_ids:
+                if identifier in waitlist:
+                    waitlist.pop(identifier, None)
+                    waitlist_updated = True
+
+        expired_ids: set[str] = set()
+        for identifier, timestamp in list(waitlist.items()):
+            if identifier in api_snapshots:
+                continue
+            if now - float(timestamp) >= waitlist_seconds:
+                expired_ids.add(identifier)
+                waitlist.pop(identifier, None)
+                waitlist_updated = True
+                effective_snapshots.pop(identifier, None)
+
+        if waitlist:
+            if waitlist != (existing_waitlist or {}):
+                self._state.removal_waitlist[source_key] = waitlist
+                waitlist_updated = True
+        else:
+            if existing_waitlist:
+                self._state.removal_waitlist.pop(source_key, None)
+                waitlist_updated = True
+
+        added_ids = set(effective_snapshots) - set(previous)
+        removed_ids = set(previous) - set(effective_snapshots)
+        return effective_snapshots, added_ids, removed_ids, waitlist_updated
+
     async def _poll_arena(self, context: CallbackContext) -> None:
         try:
             models = self._arena_client.fetch_models()
@@ -333,14 +408,15 @@ class ArenaWatcherBot:
 
         async with self._state_lock:
             previous = dict(self._state.known_models)
-            snapshots = {
+            api_snapshots = {
                 entry.identifier: self._snapshot_model(entry, previous.get(entry.identifier))
                 for entry in models
             }
+            snapshots, added_ids, removed_ids, waitlist_updated = self._apply_removal_waitlist(
+                "arena", previous, api_snapshots
+            )
             self._last_snapshot = snapshots
 
-            added_ids = set(snapshots) - set(previous)
-            removed_ids = set(previous) - set(snapshots)
             overlapping_ids = set(previous).intersection(snapshots)
             capability_updates: list[CapabilityDiff] = []
             for identifier in overlapping_ids:
@@ -348,7 +424,7 @@ class ArenaWatcherBot:
                 if diff.has_changes():
                     capability_updates.append(diff)
 
-            if not added_ids and not removed_ids and not capability_updates:
+            if not added_ids and not removed_ids and not capability_updates and not waitlist_updated:
                 logger.debug("No changes detected in arena models.")
                 return
 
@@ -386,15 +462,15 @@ class ArenaWatcherBot:
 
         async with self._state_lock:
             previous = dict(self._state.google_models)
-            snapshots = {
+            api_snapshots = {
                 entry.identifier: self._snapshot_google_model(entry, previous.get(entry.identifier))
                 for entry in models
             }
+            snapshots, added_ids, removed_ids, waitlist_updated = self._apply_removal_waitlist(
+                "google", previous, api_snapshots
+            )
 
-            added_ids = set(snapshots) - set(previous)
-            removed_ids = set(previous) - set(snapshots)
-
-            if not added_ids and not removed_ids:
+            if not added_ids and not removed_ids and not waitlist_updated:
                 logger.debug("No changes detected in Google model list.")
                 return
 
@@ -431,15 +507,15 @@ class ArenaWatcherBot:
 
         async with self._state_lock:
             previous = dict(self._state.openai_models)
-            snapshots = {
+            api_snapshots = {
                 entry.identifier: self._snapshot_openai_model(entry, previous.get(entry.identifier))
                 for entry in models
             }
+            snapshots, added_ids, removed_ids, waitlist_updated = self._apply_removal_waitlist(
+                "openai", previous, api_snapshots
+            )
 
-            added_ids = set(snapshots) - set(previous)
-            removed_ids = set(previous) - set(snapshots)
-
-            if not added_ids and not removed_ids:
+            if not added_ids and not removed_ids and not waitlist_updated:
                 logger.debug("No changes detected in OpenAI model list.")
                 return
 
@@ -476,15 +552,15 @@ class ArenaWatcherBot:
 
         async with self._state_lock:
             previous = dict(self._state.designarena_models)
-            snapshots = {
+            api_snapshots = {
                 entry.identifier: self._snapshot_designarena_model(entry, previous.get(entry.identifier))
                 for entry in models
             }
+            snapshots, added_ids, removed_ids, waitlist_updated = self._apply_removal_waitlist(
+                "designarena", previous, api_snapshots
+            )
 
-            added_ids = set(snapshots) - set(previous)
-            removed_ids = set(previous) - set(snapshots)
-
-            if not added_ids and not removed_ids:
+            if not added_ids and not removed_ids and not waitlist_updated:
                 logger.debug("No changes detected in DesignArena model list.")
                 return
 

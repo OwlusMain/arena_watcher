@@ -62,6 +62,7 @@ class WatcherState:
     google_models: Dict[str, TrackedModel] = field(default_factory=dict)
     openai_models: Dict[str, TrackedModel] = field(default_factory=dict)
     designarena_models: Dict[str, TrackedModel] = field(default_factory=dict)
+    removal_waitlist: Dict[str, Dict[str, float]] = field(default_factory=dict)
     chats: Set[int] = field(default_factory=set)
 
     def to_json(self) -> Dict[str, Any]:
@@ -81,6 +82,11 @@ class WatcherState:
             "designarena_models": {
                 identifier: model.to_json()
                 for identifier, model in sorted(self.designarena_models.items())
+            },
+            "removal_waitlist": {
+                str(source): {str(identifier): float(timestamp) for identifier, timestamp in sorted(entries.items())}
+                for source, entries in sorted(self.removal_waitlist.items())
+                if isinstance(entries, dict) and entries
             },
             "chats": sorted(self.chats),
         }
@@ -125,11 +131,30 @@ class WatcherState:
         else:
             designarena_models = {}
 
+        raw_waitlist = data.get("removal_waitlist", {})
+        removal_waitlist: Dict[str, Dict[str, float]]
+        if isinstance(raw_waitlist, dict):
+            removal_waitlist = {}
+            for source, entries in raw_waitlist.items():
+                if not isinstance(entries, dict):
+                    continue
+                parsed: Dict[str, float] = {}
+                for identifier, timestamp in entries.items():
+                    try:
+                        parsed[str(identifier)] = float(timestamp)
+                    except (TypeError, ValueError):
+                        continue
+                if parsed:
+                    removal_waitlist[str(source)] = parsed
+        else:
+            removal_waitlist = {}
+
         return cls(
             known_models=known_models,
             google_models=google_models,
             openai_models=openai_models,
             designarena_models=designarena_models,
+            removal_waitlist=removal_waitlist,
             chats=set(int(chat) for chat in data.get("chats", [])),
         )
 

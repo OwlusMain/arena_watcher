@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 DEFAULT_POLL_INTERVAL_SECONDS = 30
 DEFAULT_STATE_PATH = Path("data/state.json")
+DEFAULT_REMOVAL_WAITLIST_SECONDS = 30 * 60
 
 
 def _split_env_list(value: Optional[str]) -> List[str]:
@@ -46,6 +47,7 @@ class Config:
     telegram_token: str
     arena_models_url: str
     poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS
+    removal_waitlist_seconds: int = DEFAULT_REMOVAL_WAITLIST_SECONDS
     json_path: List[str] = field(default_factory=list)
     model_id_path: List[str] = field(default_factory=list)
     state_path: Path = DEFAULT_STATE_PATH
@@ -70,6 +72,9 @@ class Config:
 
         poll_interval_seconds = int(
             os.environ.get("POLL_INTERVAL_SECONDS", DEFAULT_POLL_INTERVAL_SECONDS)
+        )
+        removal_waitlist_seconds = int(
+            os.environ.get("REMOVAL_WAITLIST_SECONDS", DEFAULT_REMOVAL_WAITLIST_SECONDS)
         )
 
         json_path = _split_env_list(os.environ.get("ARENA_MODELS_JSON_PATH"))
@@ -96,6 +101,7 @@ class Config:
             telegram_token=telegram_token,
             arena_models_url=arena_models_url,
             poll_interval_seconds=poll_interval_seconds,
+            removal_waitlist_seconds=removal_waitlist_seconds,
             json_path=json_path,
             model_id_path=model_id_path,
             state_path=state_path,
