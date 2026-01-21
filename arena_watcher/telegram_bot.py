@@ -419,12 +419,23 @@ class ArenaWatcherBot:
 
             overlapping_ids = set(previous).intersection(snapshots)
             capability_updates: list[CapabilityDiff] = []
+            name_updates: list[tuple[str, str, TrackedModel]] = []
             for identifier in overlapping_ids:
                 diff = self._capability_changes(identifier, previous[identifier], snapshots[identifier])
                 if diff.has_changes():
                     capability_updates.append(diff)
+                before_name = previous[identifier].name
+                after_model = snapshots[identifier]
+                if before_name != after_model.name:
+                    name_updates.append((identifier, before_name, after_model))
 
-            if not added_ids and not removed_ids and not capability_updates and not waitlist_updated:
+            if (
+                not added_ids
+                and not removed_ids
+                and not capability_updates
+                and not name_updates
+                and not waitlist_updated
+            ):
                 logger.debug("No changes detected in arena models.")
                 return
 
@@ -440,12 +451,13 @@ class ArenaWatcherBot:
             self._state.known_models = snapshots
             self._store.save(self._state)
 
-        if added_models or removed_models or capability_updates:
+        if added_models or removed_models or capability_updates or name_updates:
             await self._notify_changes(
                 context,
                 added=added_models,
                 removed=removed_models,
                 capability_updates=capability_updates,
+                name_updates=name_updates,
             )
 
     async def _poll_google_models(self, context: CallbackContext) -> None:
@@ -470,7 +482,15 @@ class ArenaWatcherBot:
                 "google", previous, api_snapshots
             )
 
-            if not added_ids and not removed_ids and not waitlist_updated:
+            overlapping_ids = set(previous).intersection(snapshots)
+            name_updates: list[tuple[str, str, TrackedModel]] = []
+            for identifier in overlapping_ids:
+                before_name = previous[identifier].name
+                after_model = snapshots[identifier]
+                if before_name != after_model.name:
+                    name_updates.append((identifier, before_name, after_model))
+
+            if not added_ids and not removed_ids and not name_updates and not waitlist_updated:
                 logger.debug("No changes detected in Google model list.")
                 return
 
@@ -486,11 +506,12 @@ class ArenaWatcherBot:
             self._state.google_models = snapshots
             self._store.save(self._state)
 
-        if added_models or removed_models:
+        if added_models or removed_models or name_updates:
             await self._notify_google_changes(
                 context,
                 added=added_models,
                 removed=removed_models,
+                name_updates=name_updates,
             )
 
     async def _poll_openai_models(self, context: CallbackContext) -> None:
@@ -515,7 +536,15 @@ class ArenaWatcherBot:
                 "openai", previous, api_snapshots
             )
 
-            if not added_ids and not removed_ids and not waitlist_updated:
+            overlapping_ids = set(previous).intersection(snapshots)
+            name_updates: list[tuple[str, str, TrackedModel]] = []
+            for identifier in overlapping_ids:
+                before_name = previous[identifier].name
+                after_model = snapshots[identifier]
+                if before_name != after_model.name:
+                    name_updates.append((identifier, before_name, after_model))
+
+            if not added_ids and not removed_ids and not name_updates and not waitlist_updated:
                 logger.debug("No changes detected in OpenAI model list.")
                 return
 
@@ -531,11 +560,12 @@ class ArenaWatcherBot:
             self._state.openai_models = snapshots
             self._store.save(self._state)
 
-        if added_models or removed_models:
+        if added_models or removed_models or name_updates:
             await self._notify_openai_changes(
                 context,
                 added=added_models,
                 removed=removed_models,
+                name_updates=name_updates,
             )
 
     async def _poll_designarena_models(self, context: CallbackContext) -> None:
@@ -560,7 +590,15 @@ class ArenaWatcherBot:
                 "designarena", previous, api_snapshots
             )
 
-            if not added_ids and not removed_ids and not waitlist_updated:
+            overlapping_ids = set(previous).intersection(snapshots)
+            name_updates: list[tuple[str, str, TrackedModel]] = []
+            for identifier in overlapping_ids:
+                before_name = previous[identifier].name
+                after_model = snapshots[identifier]
+                if before_name != after_model.name:
+                    name_updates.append((identifier, before_name, after_model))
+
+            if not added_ids and not removed_ids and not name_updates and not waitlist_updated:
                 logger.debug("No changes detected in DesignArena model list.")
                 return
 
@@ -576,11 +614,12 @@ class ArenaWatcherBot:
             self._state.designarena_models = snapshots
             self._store.save(self._state)
 
-        if added_models or removed_models:
+        if added_models or removed_models or name_updates:
             await self._notify_designarena_changes(
                 context,
                 added=added_models,
                 removed=removed_models,
+                name_updates=name_updates,
             )
 
     def _snapshot_model(self, entry: ModelEntry, existing: TrackedModel | None = None) -> TrackedModel:
@@ -672,6 +711,16 @@ class ArenaWatcherBot:
             formatted += f" <i>({self._escape(model.tag)})</i>"
         return formatted
 
+    def _format_name_change(
+        self,
+        before_name: str,
+        after_model: TrackedModel,
+        identifier: str,
+    ) -> str:
+        before = self._escape(before_name or identifier)
+        after = self._format_model_name(after_model, identifier)
+        return f"{before} → {after}"
+
     def _format_capabilities(
         self,
         input_capabilities: Optional[Sequence[str]],
@@ -721,6 +770,7 @@ class ArenaWatcherBot:
         added: Sequence[TrackedModel],
         removed: Sequence[tuple[str, TrackedModel]],
         capability_updates: Sequence[CapabilityDiff],
+        name_updates: Sequence[tuple[str, str, TrackedModel]],
     ) -> None:
         if not self._state.chats:
             logger.debug("No chats to notify for model changes.")
@@ -752,7 +802,17 @@ class ArenaWatcherBot:
             )
             capability_message = f"<b>⚙️ Capability updates on LMArena:</b>\n{lines}"
 
-        message_parts = [part for part in (added_message, removed_message, capability_message) if part]
+        name_message = ""
+        if name_updates:
+            lines = "\n".join(
+                f"• {self._format_name_change(before_name, after_model, identifier)}"
+                for identifier, before_name, after_model in name_updates
+            )
+            name_message = f"<b>✏️ Name updates on LMArena:</b>\n{lines}"
+
+        message_parts = [
+            part for part in (added_message, removed_message, capability_message, name_message) if part
+        ]
         if not message_parts:
             return
 
@@ -769,6 +829,7 @@ class ArenaWatcherBot:
         context: CallbackContext,
         added: Sequence[TrackedModel],
         removed: Sequence[tuple[str, TrackedModel]],
+        name_updates: Sequence[tuple[str, str, TrackedModel]],
     ) -> None:
         if not self._state.chats:
             logger.debug("No chats to notify for Google model changes.")
@@ -790,7 +851,15 @@ class ArenaWatcherBot:
             )
             removed_message = f"<b>❌ Removed models from Google AI:</b>\n{lines}"
 
-        message_parts = [part for part in (added_message, removed_message) if part]
+        name_message = ""
+        if name_updates:
+            lines = "\n".join(
+                f"• {self._format_name_change(before_name, after_model, identifier)}"
+                for identifier, before_name, after_model in name_updates
+            )
+            name_message = f"<b>✏️ Name updates on Google:</b>\n{lines}"
+
+        message_parts = [part for part in (added_message, removed_message, name_message) if part]
         if not message_parts:
             return
 
@@ -807,6 +876,7 @@ class ArenaWatcherBot:
         context: CallbackContext,
         added: Sequence[TrackedModel],
         removed: Sequence[tuple[str, TrackedModel]],
+        name_updates: Sequence[tuple[str, str, TrackedModel]],
     ) -> None:
         if not self._state.chats:
             logger.debug("No chats to notify for OpenAI model changes.")
@@ -828,7 +898,15 @@ class ArenaWatcherBot:
             )
             removed_message = f"<b>❌ Removed models from OpenAI API:</b>\n{lines}"
 
-        message_parts = [part for part in (added_message, removed_message) if part]
+        name_message = ""
+        if name_updates:
+            lines = "\n".join(
+                f"• {self._format_name_change(before_name, after_model, identifier)}"
+                for identifier, before_name, after_model in name_updates
+            )
+            name_message = f"<b>✏️ Name updates on OpenAI:</b>\n{lines}"
+
+        message_parts = [part for part in (added_message, removed_message, name_message) if part]
         if not message_parts:
             return
 
@@ -845,6 +923,7 @@ class ArenaWatcherBot:
         context: CallbackContext,
         added: Sequence[TrackedModel],
         removed: Sequence[tuple[str, TrackedModel]],
+        name_updates: Sequence[tuple[str, str, TrackedModel]],
     ) -> None:
         if not self._state.chats:
             logger.debug("No chats to notify for DesignArena model changes.")
@@ -866,7 +945,15 @@ class ArenaWatcherBot:
             )
             removed_message = f"<b>❌ Removed models from DesignArena:</b>\n{lines}"
 
-        message_parts = [part for part in (added_message, removed_message) if part]
+        name_message = ""
+        if name_updates:
+            lines = "\n".join(
+                f"• {self._format_name_change(before_name, after_model, identifier)}"
+                for identifier, before_name, after_model in name_updates
+            )
+            name_message = f"<b>✏️ Name updates on DesignArena:</b>\n{lines}"
+
+        message_parts = [part for part in (added_message, removed_message, name_message) if part]
         if not message_parts:
             return
 

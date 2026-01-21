@@ -25,7 +25,6 @@ class DesignArenaClientConfig:
 class DesignArenaClient:
     def __init__(self, config: DesignArenaClientConfig | None = None) -> None:
         self._config = config or DesignArenaClientConfig()
-        self._mapping_pattern = re.compile(r'id:"([^"]+)"[^}]*?displayName:"([^"]+)"', re.DOTALL)
         # Match script src values for .js files (with optional query strings), case-insensitive.
         self._script_src_regex = re.compile(r'src=["\']([^"\']+\.js[^"\']*)["\']', re.IGNORECASE)
         self._session = requests.Session()
@@ -37,17 +36,12 @@ class DesignArenaClient:
         )
 
     def fetch_models(self) -> List[ModelEntry]:
-        bundle_url, text = self._fetch_bundle_with_mapping()
-        mapping_start = text.find("let n=")
-        if mapping_start == -1:
-            raise DesignArenaFetchError("DesignArena bundle did not contain the expected mapping.")
-        mapping_start = text.find("{", mapping_start)
-        mapping_end = self._find_matching_brace(text, mapping_start)
-        if mapping_end is None:
-            raise DesignArenaFetchError("Could not parse the model mapping from DesignArena bundle.")
+        _, text = self._fetch_bundle_with_mapping()
+        model_block = self._find_largest_model_block(text)
+        if not model_block:
+            raise DesignArenaFetchError("No models found in the DesignArena bundle.")
 
-        segment = text[mapping_start : mapping_end + 1]
-        matches = self._mapping_pattern.findall(segment)
+        matches = self._extract_model_entries(model_block)
         if not matches:
             raise DesignArenaFetchError("No models found in the DesignArena bundle.")
 
@@ -184,3 +178,103 @@ class DesignArenaClient:
                 if depth == 0:
                     return index
         return None
+
+    def _extract_top_level_object_values(self, text: str, start: int) -> list[str]:
+        end = self._find_matching_brace(text, start)
+        if end is None:
+            return []
+
+        values: list[str] = []
+        depth = 0
+        quote: str | None = None
+        escape = False
+        index = start
+        while index <= end:
+            char = text[index]
+            if escape:
+                escape = False
+                index += 1
+                continue
+            if char == "\\":
+                escape = True
+                index += 1
+                continue
+            if quote:
+                if char == quote:
+                    quote = None
+                index += 1
+                continue
+            if char in ('"', "'"):
+                quote = char
+                index += 1
+                continue
+            if char == "{":
+                depth += 1
+                index += 1
+                continue
+            if char == "}":
+                depth -= 1
+                index += 1
+                continue
+            if char == ":" and depth == 1:
+                scan = index + 1
+                while scan <= end and text[scan].isspace():
+                    scan += 1
+                if scan <= end and text[scan] == "{":
+                    block_end = self._find_matching_brace(text, scan)
+                    if block_end is not None:
+                        values.append(text[scan : block_end + 1])
+                        index = block_end + 1
+                        continue
+            index += 1
+
+        return values
+
+    def _iter_object_spans(self, text: str) -> Iterable[tuple[int, int]]:
+        stack: list[int] = []
+        quote: str | None = None
+        escape = False
+        for index, char in enumerate(text):
+            if escape:
+                escape = False
+                continue
+            if char == "\\":
+                escape = True
+                continue
+            if quote:
+                if char == quote:
+                    quote = None
+                continue
+            if char in ('"', "'"):
+                quote = char
+                continue
+            if char == "{":
+                stack.append(index)
+            elif char == "}" and stack:
+                start = stack.pop()
+                yield start, index
+
+    def _find_largest_model_block(self, text: str) -> str | None:
+        best_block = None
+        best_count = 0
+        for start, end in self._iter_object_spans(text):
+            if end - start < 500:
+                continue
+            segment = text[start : end + 1]
+            if "displayName" not in segment or "id" not in segment:
+                continue
+            entries = self._extract_model_entries(segment)
+            if len(entries) > best_count:
+                best_count = len(entries)
+                best_block = segment
+        return best_block
+
+    def _extract_model_entries(self, block: str) -> list[tuple[str, str]]:
+        entries: list[tuple[str, str]] = []
+        objects = self._extract_top_level_object_values(block, 0)
+        for obj in objects:
+            id_match = re.search(r"\bid\s*:\s*['\"]([^'\"]+)['\"]", obj)
+            display_match = re.search(r"\bdisplayName\s*:\s*['\"]([^'\"]+)['\"]", obj)
+            if id_match and display_match:
+                entries.append((id_match.group(1), display_match.group(1)))
+        return entries
