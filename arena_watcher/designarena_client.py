@@ -35,19 +35,44 @@ class DesignArenaClient:
             }
         )
 
+    _ONLY_FLAGS = {
+        "agentRunnerOnly",
+        "audioOnly",
+        "graphicDesignOnly",
+        "imageOnly",
+        "slidesOnly",
+        "svgOnly",
+        "videoOnly",
+        "websiteOnly",
+    }
+    _SUPPORT_FLAGS = {
+        "supportsAudio",
+        "supportsImageEditing",
+        "supportsImageGeneration",
+        "supportsPrompt",
+        "supportsSlidesGeneration",
+        "supportsVideoGeneration",
+        "supportsVision",
+    }
+
     def fetch_models(self) -> List[ModelEntry]:
         _, text = self._fetch_bundle_with_mapping()
         model_block = self._find_largest_model_block(text)
         if not model_block:
             raise DesignArenaFetchError("No models found in the DesignArena bundle.")
 
-        matches = self._extract_model_entries(model_block)
-        if not matches:
+        objects = self._extract_model_entries(model_block)
+        if not objects:
             raise DesignArenaFetchError("No models found in the DesignArena bundle.")
 
         entries: list[ModelEntry] = []
-        for identifier, display_name in matches:
-            entries.append(ModelEntry(identifier=identifier, name=display_name, raw={"id": identifier, "name": display_name}))
+        for identifier, display_name, obj in objects:
+            raw = {"id": identifier, "name": display_name}
+            raw.update(self._parse_model_fields(obj))
+            active = raw.get("active")
+            if active is False:
+                continue
+            entries.append(ModelEntry(identifier=identifier, name=display_name, raw=raw))
         return entries
 
     def _fetch_bundle_with_mapping(self) -> tuple[str, str]:
@@ -269,12 +294,41 @@ class DesignArenaClient:
                 best_block = segment
         return best_block
 
-    def _extract_model_entries(self, block: str) -> list[tuple[str, str]]:
-        entries: list[tuple[str, str]] = []
+    def _extract_model_entries(self, block: str) -> list[tuple[str, str, str]]:
+        entries: list[tuple[str, str, str]] = []
         objects = self._extract_top_level_object_values(block, 0)
         for obj in objects:
             id_match = re.search(r"\bid\s*:\s*['\"]([^'\"]+)['\"]", obj)
             display_match = re.search(r"\bdisplayName\s*:\s*['\"]([^'\"]+)['\"]", obj)
             if id_match and display_match:
-                entries.append((id_match.group(1), display_match.group(1)))
+                entries.append((id_match.group(1), display_match.group(1), obj))
         return entries
+
+    @classmethod
+    def _parse_model_fields(cls, obj: str) -> dict[str, object]:
+        fields: dict[str, object] = {}
+        for key in {"active", *cls._ONLY_FLAGS, *cls._SUPPORT_FLAGS}:
+            value = cls._extract_bool(obj, key)
+            if value is not None:
+                fields[key] = value
+
+        supported_modes = cls._extract_string_list(obj, "supportedModes")
+        if supported_modes:
+            fields["supportedModes"] = supported_modes
+        return fields
+
+    @staticmethod
+    def _extract_bool(obj: str, key: str) -> bool | None:
+        match = re.search(rf"\b{re.escape(key)}\s*:\s*(!0|!1|true|false)\b", obj)
+        if not match:
+            return None
+        value = match.group(1)
+        return value in ("!0", "true")
+
+    @staticmethod
+    def _extract_string_list(obj: str, key: str) -> list[str]:
+        match = re.search(rf"\b{re.escape(key)}\s*:\s*\[([^\]]*)\]", obj)
+        if not match:
+            return []
+        raw = match.group(1)
+        return [item for item in re.findall(r"['\"]([^'\"]+)['\"]", raw) if item]
