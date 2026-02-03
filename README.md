@@ -1,8 +1,8 @@
 # Arena Battle Watcher Bot
 
-A configurable Telegram bot that watches the LMArena battle-mode API endpoint, detects when models join or leave the pool, and broadcasts notifications in every chat where the bot has been added.
+A configurable Telegram bot that watches the Arena battle-mode API endpoint, detects when models join or leave the pool, and broadcasts notifications in every chat where the bot has been added.
 
-The project does **not** hard-code a particular API route because the publicly-available LMArena endpoints are protected by Cloudflare and/or require authentication. Instead, supply the exact endpoint plus any headers/cookies that work for your account or mirror. The bot will periodically poll that endpoint, track changes, and post updates.
+The project does **not** hard-code a particular API route because the publicly-available Arena endpoints are protected by Cloudflare and/or require authentication. Instead, supply the exact endpoint plus any headers/cookies that work for your account or mirror. The bot will periodically poll that endpoint, track changes, and post updates.
 
 ## Features
 
@@ -44,17 +44,17 @@ Set the following environment variables before running `python main.py`:
 
 ### Example
 
-If you can access LMArena's Next.js data endpoint after solving the Cloudflare challenge, the response may live at something like:
+If you can access Arena's Next.js data endpoint after solving the Cloudflare challenge, the response may live at something like:
 
 ```text
-https://lmarena.ai/_next/data/<BUILD_ID>/en/arena.json
+https://arena.ai/_next/data/<BUILD_ID>/en/arena.json
 ```
 
 Assuming the JSON array is available at `pageProps.models` and each model has a `slug`, you could launch the bot with:
 
 ```bash
 export TELEGRAM_BOT_TOKEN="<token>"
-export ARENA_MODELS_URL="https://lmarena.ai/_next/data/<BUILD_ID>/en/arena.json"
+export ARENA_MODELS_URL="https://arena.ai/_next/data/<BUILD_ID>/en/arena.json"
 export ARENA_MODELS_JSON_PATH="pageProps,models"
 export ARENA_MODEL_ID_PATH="slug"
 python main.py

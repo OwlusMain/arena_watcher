@@ -145,7 +145,7 @@ class ArenaWatcherBot:
             chat_id=chat_id,
             text=(
                 "👋 I'll notify this chat about Battle mode model additions/removals "
-                "on lmarena.ai."
+                "on arena.ai."
             ),
         )
 
@@ -201,7 +201,7 @@ class ArenaWatcherBot:
         async with self._state_lock:
             target_lower = target_key.lower()
             sources: list[tuple[str, dict[str, TrackedModel]]] = [
-                ("LMArena", self._state.known_models),
+                ("Arena", self._state.known_models),
                 ("Google", self._state.google_models),
                 ("OpenAI", self._state.openai_models),
                 ("DesignArena", self._state.designarena_models),
@@ -311,7 +311,7 @@ class ArenaWatcherBot:
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=(
-                        "Thanks for adding me! I'll post LMArena Battle mode updates here. "
+                        "Thanks for adding me! I'll post Arena Battle mode updates here. "
                         "Remove me from the channel to stop the notifications."
                     ),
                 )
@@ -867,7 +867,7 @@ class ArenaWatcherBot:
                 f"{self._format_capabilities(model.input_capabilities, model.output_capabilities)}"
                 for model in added
             )
-            added_message = f"<b>🆕 New models on LMArena:</b>\n{lines}"
+            added_message = f"<b>🆕 New models on Arena:</b>\n{lines}"
 
         removed_message = ""
         if removed:
@@ -876,7 +876,7 @@ class ArenaWatcherBot:
                 f"{self._format_capabilities(model.input_capabilities, model.output_capabilities)}"
                 for identifier, model in removed
             )
-            removed_message = f"<b>❌ Removed from LMArena:</b>\n{lines}"
+            removed_message = f"<b>❌ Removed from Arena:</b>\n{lines}"
 
         capability_message = ""
         if capability_updates:
@@ -884,7 +884,7 @@ class ArenaWatcherBot:
                 f"• {self._format_model_name(diff.model)}{self._format_capability_change(diff)}"
                 for diff in capability_updates
             )
-            capability_message = f"<b>⚙️ Capability updates on LMArena:</b>\n{lines}"
+            capability_message = f"<b>⚙️ Capability updates on Arena:</b>\n{lines}"
 
         name_message = ""
         if name_updates:
@@ -892,7 +892,7 @@ class ArenaWatcherBot:
                 f"• {self._format_name_change(before_name, after_model, identifier)}"
                 for identifier, before_name, after_model in name_updates
             )
-            name_message = f"<b>✏️ Name updates on LMArena:</b>\n{lines}"
+            name_message = f"<b>✏️ Name updates on Arena:</b>\n{lines}"
 
         message_parts = [
             part for part in (added_message, removed_message, capability_message, name_message) if part
