@@ -4,6 +4,10 @@ import logging
 import sys
 
 from arena_watcher.arena_client import ArenaClient
+from arena_watcher.anthropic_models_client import (
+    AnthropicModelsClient,
+    AnthropicModelsClientConfig,
+)
 from arena_watcher.config import Config
 from arena_watcher.designarena_client import DesignArenaClient, DesignArenaClientConfig
 from arena_watcher.google_models_client import GoogleModelsClient, GoogleModelsClientConfig
@@ -48,6 +52,14 @@ def main() -> int:
                 api_key=config.openai_api_key,
             )
         )
+    anthropic_client = None
+    if config.anthropic_api_key:
+        anthropic_client = AnthropicModelsClient(
+            AnthropicModelsClientConfig(
+                api_key=config.anthropic_api_key,
+                api_version=config.anthropic_api_version,
+            )
+        )
     designarena_client = DesignArenaClient(DesignArenaClientConfig())
     state_store = StateStore(config.state_path)
     bot = ArenaWatcherBot(
@@ -56,6 +68,7 @@ def main() -> int:
         state_store,
         google_client,
         openai_client,
+        anthropic_client,
         designarena_client,
     )
     bot.run()

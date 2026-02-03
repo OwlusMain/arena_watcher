@@ -39,6 +39,9 @@ Set the following environment variables before running `python main.py`:
 | `GOOGLE_POLL_INTERVAL_SECONDS` | ❌ | Polling cadence for the Google lookup (defaults to `POLL_INTERVAL_SECONDS`). |
 | `OPENAI_API_KEY` | ❌ | API key for OpenAI. When set, the bot polls the OpenAI models API for additions/removals. |
 | `OPENAI_POLL_INTERVAL_SECONDS` | ❌ | Polling cadence for the OpenAI lookup (defaults to `POLL_INTERVAL_SECONDS`). |
+| `ANTHROPIC_API_KEY` | ❌ | API key for Anthropic. When set, the bot polls the Anthropic models API for additions/removals. |
+| `ANTHROPIC_API_VERSION` | ❌ | Anthropic API version header (defaults to `2023-06-01`). |
+| `ANTHROPIC_POLL_INTERVAL_SECONDS` | ❌ | Polling cadence for the Anthropic lookup (defaults to `POLL_INTERVAL_SECONDS`). |
 | `ADMIN_USER_IDS` | ❌ | Comma-separated Telegram user IDs allowed to manage model tags (e.g. `123,456`). |
 | `DESIGNARENA_POLL_INTERVAL_SECONDS` | ❌ | Polling cadence for the DesignArena lookup (defaults to `POLL_INTERVAL_SECONDS`). |
 
@@ -74,6 +77,18 @@ python main.py
 ### DesignArena model tracking
 
 The bot automatically polls the DesignArena model bundle (`designarena.ai`) to detect added/removed models. No credentials are required. You can adjust cadence with `DESIGNARENA_POLL_INTERVAL_SECONDS`.
+
+### Anthropic model tracking
+
+If you provide an Anthropic API key, the bot will call the `/v1/models` endpoint and announce when Anthropic adds or removes models:
+
+```bash
+export ANTHROPIC_API_KEY="<anthropic-key>"
+# Optional overrides:
+# export ANTHROPIC_API_VERSION="2023-06-01"
+# export ANTHROPIC_POLL_INTERVAL_SECONDS="300"
+python main.py
+```
 
 ### Google/Vertex model tracking
 

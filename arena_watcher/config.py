@@ -57,6 +57,9 @@ class Config:
     google_poll_interval_seconds: Optional[int] = None
     openai_api_key: Optional[str] = None
     openai_poll_interval_seconds: Optional[int] = None
+    anthropic_api_key: Optional[str] = None
+    anthropic_poll_interval_seconds: Optional[int] = None
+    anthropic_api_version: str = "2023-06-01"
     admin_user_ids: List[int] = field(default_factory=list)
     designarena_poll_interval_seconds: Optional[int] = None
 
@@ -94,6 +97,9 @@ class Config:
         google_poll_interval_seconds = os.environ.get("GOOGLE_POLL_INTERVAL_SECONDS")
         openai_api_key = os.environ.get("OPENAI_API_KEY")
         openai_poll_interval_seconds = os.environ.get("OPENAI_POLL_INTERVAL_SECONDS")
+        anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY")
+        anthropic_poll_interval_seconds = os.environ.get("ANTHROPIC_POLL_INTERVAL_SECONDS")
+        anthropic_api_version = os.environ.get("ANTHROPIC_API_VERSION", "2023-06-01")
         admin_user_ids = _split_env_int_list(os.environ.get("ADMIN_USER_IDS"))
         designarena_poll_interval_seconds = os.environ.get("DESIGNARENA_POLL_INTERVAL_SECONDS")
 
@@ -115,6 +121,11 @@ class Config:
             openai_poll_interval_seconds=int(openai_poll_interval_seconds)
             if openai_poll_interval_seconds
             else None,
+            anthropic_api_key=anthropic_api_key,
+            anthropic_poll_interval_seconds=int(anthropic_poll_interval_seconds)
+            if anthropic_poll_interval_seconds
+            else None,
+            anthropic_api_version=anthropic_api_version,
             admin_user_ids=admin_user_ids,
             designarena_poll_interval_seconds=int(designarena_poll_interval_seconds)
             if designarena_poll_interval_seconds

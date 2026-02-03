@@ -21,6 +21,7 @@ from telegram.ext import (
 )
 
 from .arena_client import ArenaClient, ArenaFetchError, ModelEntry
+from .anthropic_models_client import AnthropicModelFetchError, AnthropicModelsClient
 from .config import Config
 from .google_models_client import GoogleModelFetchError, GoogleModelsClient
 from .openai_models_client import OpenAIModelFetchError, OpenAIModelsClient
@@ -68,12 +69,14 @@ class ArenaWatcherBot:
         state_store: StateStore,
         google_models_client: GoogleModelsClient | None = None,
         openai_models_client: OpenAIModelsClient | None = None,
+        anthropic_models_client: AnthropicModelsClient | None = None,
         designarena_client: DesignArenaClient | None = None,
     ) -> None:
         self._config = config
         self._arena_client = arena_client
         self._google_client = google_models_client
         self._openai_client = openai_models_client
+        self._anthropic_client = anthropic_models_client
         self._designarena_client = designarena_client
         self._store = state_store
         self._state = self._store.load()
@@ -120,6 +123,14 @@ class ArenaWatcherBot:
                 or self._config.poll_interval_seconds,
                 first=10,
                 name="openai-model-poller",
+            )
+        if self._anthropic_client:
+            job_queue.run_repeating(
+                self._poll_anthropic_models,
+                interval=self._config.anthropic_poll_interval_seconds
+                or self._config.poll_interval_seconds,
+                first=12,
+                name="anthropic-model-poller",
             )
         if self._designarena_client:
             job_queue.run_repeating(
@@ -204,6 +215,7 @@ class ArenaWatcherBot:
                 ("Arena", self._state.known_models),
                 ("Google", self._state.google_models),
                 ("OpenAI", self._state.openai_models),
+                ("Anthropic", self._state.anthropic_models),
                 ("DesignArena", self._state.designarena_models),
             ]
             exact_matches: list[tuple[str, TrackedModel, dict[str, TrackedModel], str]] = []
@@ -568,6 +580,60 @@ class ArenaWatcherBot:
                 name_updates=name_updates,
             )
 
+    async def _poll_anthropic_models(self, context: CallbackContext) -> None:
+        if not self._anthropic_client:
+            return
+
+        try:
+            models = self._anthropic_client.fetch_models()
+        except AnthropicModelFetchError as exc:
+            logger.warning("Anthropic models fetch failed: %s", exc)
+            return
+
+        logger.debug("Fetched %d models from Anthropic.", len(models))
+
+        async with self._state_lock:
+            previous = dict(self._state.anthropic_models)
+            api_snapshots = {
+                entry.identifier: self._snapshot_anthropic_model(entry, previous.get(entry.identifier))
+                for entry in models
+            }
+            snapshots, added_ids, removed_ids, waitlist_updated = self._apply_removal_waitlist(
+                "anthropic", previous, api_snapshots
+            )
+
+            overlapping_ids = set(previous).intersection(snapshots)
+            name_updates: list[tuple[str, str, TrackedModel]] = []
+            for identifier in overlapping_ids:
+                before_name = previous[identifier].name
+                after_model = snapshots[identifier]
+                if before_name != after_model.name:
+                    name_updates.append((identifier, before_name, after_model))
+
+            if not added_ids and not removed_ids and not name_updates and not waitlist_updated:
+                logger.debug("No changes detected in Anthropic model list.")
+                return
+
+            added_models = sorted(
+                (snapshots[identifier] for identifier in added_ids),
+                key=lambda model: model.name.lower(),
+            )
+            removed_models = sorted(
+                ((identifier, previous[identifier]) for identifier in removed_ids),
+                key=lambda item: item[1].name.lower(),
+            )
+
+            self._state.anthropic_models = snapshots
+            self._store.save(self._state)
+
+        if added_models or removed_models or name_updates:
+            await self._notify_anthropic_changes(
+                context,
+                added=added_models,
+                removed=removed_models,
+                name_updates=name_updates,
+            )
+
     async def _poll_designarena_models(self, context: CallbackContext) -> None:
         if not self._designarena_client:
             return
@@ -639,6 +705,15 @@ class ArenaWatcherBot:
         )
 
     def _snapshot_openai_model(self, entry: ModelEntry, existing: TrackedModel | None = None) -> TrackedModel:
+        return TrackedModel(
+            name=entry.name,
+            output_capabilities=None,
+            tag=existing.tag if existing else None,
+        )
+
+    def _snapshot_anthropic_model(
+        self, entry: ModelEntry, existing: TrackedModel | None = None
+    ) -> TrackedModel:
         return TrackedModel(
             name=entry.name,
             output_capabilities=None,
@@ -1001,6 +1076,55 @@ class ArenaWatcherBot:
                 await context.bot.send_message(chat_id=chat_id, text=message, parse_mode="HTML")
             except Exception as exc:  # pragma: no cover - network failure
                 logger.warning("Failed to send OpenAI model update to chat %s: %s", chat_id, exc)
+
+    async def _notify_anthropic_changes(
+        self,
+        context: CallbackContext,
+        added: Sequence[TrackedModel],
+        removed: Sequence[tuple[str, TrackedModel]],
+        name_updates: Sequence[tuple[str, str, TrackedModel]],
+    ) -> None:
+        if not self._state.chats:
+            logger.debug("No chats to notify for Anthropic model changes.")
+            return
+
+        added_message = ""
+        if added:
+            lines = "\n".join(
+                f"• {self._format_model_name(model)}"
+                for model in added
+            )
+            added_message = f"<b>🆕 New Anthropic API models available:</b>\n{lines}"
+
+        removed_message = ""
+        if removed:
+            lines = "\n".join(
+                f"• {self._format_model_name(model, identifier)}"
+                for identifier, model in removed
+            )
+            removed_message = f"<b>❌ Removed models from Anthropic API:</b>\n{lines}"
+
+        name_message = ""
+        if name_updates:
+            lines = "\n".join(
+                f"• {self._format_name_change(before_name, after_model, identifier)}"
+                for identifier, before_name, after_model in name_updates
+            )
+            name_message = f"<b>✏️ Name updates on Anthropic:</b>\n{lines}"
+
+        message_parts = [part for part in (added_message, removed_message, name_message) if part]
+        if not message_parts:
+            return
+
+        message = "\n\n".join(message_parts)
+
+        for chat_id in list(self._state.chats):
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=message, parse_mode="HTML")
+            except Exception as exc:  # pragma: no cover - network failure
+                logger.warning(
+                    "Failed to send Anthropic model update to chat %s: %s", chat_id, exc
+                )
 
     async def _notify_designarena_changes(
         self,

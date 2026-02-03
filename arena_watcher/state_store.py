@@ -61,6 +61,7 @@ class WatcherState:
     known_models: Dict[str, TrackedModel] = field(default_factory=dict)
     google_models: Dict[str, TrackedModel] = field(default_factory=dict)
     openai_models: Dict[str, TrackedModel] = field(default_factory=dict)
+    anthropic_models: Dict[str, TrackedModel] = field(default_factory=dict)
     designarena_models: Dict[str, TrackedModel] = field(default_factory=dict)
     removal_waitlist: Dict[str, Dict[str, float]] = field(default_factory=dict)
     chats: Set[int] = field(default_factory=set)
@@ -78,6 +79,10 @@ class WatcherState:
             "openai_models": {
                 identifier: model.to_json()
                 for identifier, model in sorted(self.openai_models.items())
+            },
+            "anthropic_models": {
+                identifier: model.to_json()
+                for identifier, model in sorted(self.anthropic_models.items())
             },
             "designarena_models": {
                 identifier: model.to_json()
@@ -122,6 +127,15 @@ class WatcherState:
         else:
             openai_models = {}
 
+        raw_anthropic_models = data.get("anthropic_models", {})
+        if isinstance(raw_anthropic_models, dict):
+            anthropic_models = {
+                str(identifier): TrackedModel.from_json(payload)
+                for identifier, payload in raw_anthropic_models.items()
+            }
+        else:
+            anthropic_models = {}
+
         raw_designarena_models = data.get("designarena_models", {})
         if isinstance(raw_designarena_models, dict):
             designarena_models = {
@@ -153,6 +167,7 @@ class WatcherState:
             known_models=known_models,
             google_models=google_models,
             openai_models=openai_models,
+            anthropic_models=anthropic_models,
             designarena_models=designarena_models,
             removal_waitlist=removal_waitlist,
             chats=set(int(chat) for chat in data.get("chats", [])),
