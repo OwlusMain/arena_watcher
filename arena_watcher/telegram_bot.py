@@ -643,6 +643,9 @@ class ArenaWatcherBot:
         except DesignArenaFetchError as exc:
             logger.warning("DesignArena models fetch failed: %s", exc)
             return
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.exception("Unexpected DesignArena parsing error: %s", exc)
+            return
 
         logger.debug("Fetched %d models from DesignArena.", len(models))
 

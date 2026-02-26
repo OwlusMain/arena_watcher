@@ -85,18 +85,36 @@ class DesignArenaClient:
         except Exception as exc:  # pragma: no cover - network failure
             raise DesignArenaFetchError(f"Failed to reach {self._config.base_url}: {exc}") from exc
 
-        if response.status_code < 200 or response.status_code >= 300:
-            raise DesignArenaFetchError(
-                f"DesignArena responded with status {response.status_code} for {response.url}."
-            )
-
         html = response.text or ""
+        if response.status_code < 200 or response.status_code >= 300:
+            if self._looks_like_security_checkpoint(html):
+                logger.warning(
+                    "DesignArena homepage returned a security checkpoint page (status=%s).",
+                    response.status_code,
+                )
+            elif not html:
+                raise DesignArenaFetchError(
+                    f"DesignArena responded with status {response.status_code} for {response.url}."
+                )
         candidates: Set[str] = set(self._extract_script_urls(html))
 
         manifest_url = self._extract_manifest_url(html)
         if manifest_url:
-            manifest_text = self._fetch_text(urljoin(self._config.base_url, manifest_url))
-            candidates.update(self._extract_script_urls(manifest_text))
+            try:
+                manifest_text = self._fetch_text(urljoin(self._config.base_url, manifest_url))
+            except DesignArenaFetchError:
+                manifest_text = ""
+            if manifest_text:
+                candidates.update(self._extract_script_urls(manifest_text))
+
+        # When the root page is challenged (e.g. Vercel Security Checkpoint), the app page
+        # may still expose script references.
+        for fallback_page in ("leaderboard",):
+            try:
+                fallback_html = self._fetch_text(urljoin(self._config.base_url, fallback_page))
+            except DesignArenaFetchError:
+                continue
+            candidates.update(self._extract_script_urls(fallback_html))
 
         if not candidates:
             # Retry with a fresh one-off request (matches the manual repro) in case session headers/cookies
@@ -109,8 +127,14 @@ class DesignArenaClient:
 
         tried: list[str] = []
         if not candidates:
-            raise DesignArenaFetchError("No script candidates found in DesignArena HTML.")
+            status_hint = ""
+            if self._looks_like_security_checkpoint(html):
+                status_hint = " The site is serving a Vercel Security Checkpoint page."
+            raise DesignArenaFetchError("No script candidates found in DesignArena HTML." + status_hint)
 
+        best_url: str | None = None
+        best_text: str | None = None
+        best_count = 0
         for path in candidates:
             url = urljoin(self._config.base_url, path)
             try:
@@ -118,14 +142,20 @@ class DesignArenaClient:
             except DesignArenaFetchError:
                 tried.append(url)
                 continue
-            if (
-                "open_source:!" in text
-            ):
-                mapping_pos = text.find("let n=")
-                brace_pos = text.find("{", mapping_pos) if mapping_pos != -1 else -1
-                if mapping_pos != -1 and brace_pos != -1:
-                    return url, text
+
+            block = self._find_largest_model_block(text)
+            if not block:
+                tried.append(url)
+                continue
+            entry_count = len(self._extract_model_entries(block))
+            if entry_count > best_count:
+                best_count = entry_count
+                best_url = url
+                best_text = text
             tried.append(url)
+
+        if best_url and best_text and best_count > 0:
+            return best_url, best_text
 
         raise DesignArenaFetchError(
             "Could not locate DesignArena model bundle after checking scripts. Tried: "
@@ -332,3 +362,7 @@ class DesignArenaClient:
             return []
         raw = match.group(1)
         return [item for item in re.findall(r"['\"]([^'\"]+)['\"]", raw) if item]
+
+    @staticmethod
+    def _looks_like_security_checkpoint(text: str) -> bool:
+        return "Vercel Security Checkpoint" in text
