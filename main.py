@@ -60,7 +60,13 @@ def main() -> int:
                 api_version=config.anthropic_api_version,
             )
         )
-    designarena_client = DesignArenaClient(DesignArenaClientConfig())
+    designarena_client = DesignArenaClient(
+        DesignArenaClientConfig(
+            base_url=config.designarena_base_url,
+            headers=config.designarena_request_headers,
+            cookies=config.designarena_request_cookies,
+        )
+    )
     state_store = StateStore(config.state_path)
     bot = ArenaWatcherBot(
         config,

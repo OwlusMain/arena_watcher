@@ -44,6 +44,9 @@ Set the following environment variables before running `python main.py`:
 | `ANTHROPIC_POLL_INTERVAL_SECONDS` | ❌ | Polling cadence for the Anthropic lookup (defaults to `POLL_INTERVAL_SECONDS`). |
 | `ADMIN_USER_IDS` | ❌ | Comma-separated Telegram user IDs allowed to manage model tags (e.g. `123,456`). |
 | `DESIGNARENA_POLL_INTERVAL_SECONDS` | ❌ | Polling cadence for the DesignArena lookup (defaults to `POLL_INTERVAL_SECONDS`). |
+| `DESIGNARENA_BASE_URL` | ❌ | Base URL for DesignArena scraping (defaults to `https://www.designarena.ai/`). |
+| `DESIGNARENA_REQUEST_HEADERS` | ❌ | JSON object encoded as a string with extra HTTP headers for DesignArena requests. |
+| `DESIGNARENA_REQUEST_COOKIES` | ❌ | JSON object encoded as a string with cookies for DesignArena requests (for example a clearance cookie if the site enables bot protection). |
 
 ### Example
 
@@ -76,7 +79,9 @@ python main.py
 
 ### DesignArena model tracking
 
-The bot automatically polls the DesignArena model bundle (`designarena.ai`) to detect added/removed models. No credentials are required. You can adjust cadence with `DESIGNARENA_POLL_INTERVAL_SECONDS`.
+The bot polls DesignArena's public registry endpoint (`https://www.designarena.ai/api/registry`) to detect added/removed models. You can adjust cadence with `DESIGNARENA_POLL_INTERVAL_SECONDS`.
+
+If DesignArena starts serving a Vercel security checkpoint to your runtime, provide the same browser headers and/or cookies that solve the challenge in `DESIGNARENA_REQUEST_HEADERS` or `DESIGNARENA_REQUEST_COOKIES`.
 
 ### Anthropic model tracking
 

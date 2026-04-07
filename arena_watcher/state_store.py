@@ -33,6 +33,7 @@ class TrackedModel:
     name: str
     input_capabilities: Optional[List[str]] = None
     output_capabilities: Optional[List[str]] = None
+    modes: Optional[List[str]] = None
     tag: Optional[str] = None
 
     def to_json(self) -> Dict[str, Any]:
@@ -40,6 +41,7 @@ class TrackedModel:
             "name": self.name,
             "input_capabilities": self.input_capabilities,
             "output_capabilities": self.output_capabilities,
+            "modes": self.modes,
             "tag": self.tag,
         }
 
@@ -52,6 +54,7 @@ class TrackedModel:
             name=name,
             input_capabilities=_normalize_capability_list(data.get("input_capabilities")),
             output_capabilities=_normalize_capability_list(data.get("output_capabilities")),
+            modes=_normalize_capability_list(data.get("modes")),
             tag=_normalize_tag(data.get("tag")),
         )
 

@@ -62,6 +62,9 @@ class Config:
     anthropic_api_version: str = "2023-06-01"
     admin_user_ids: List[int] = field(default_factory=list)
     designarena_poll_interval_seconds: Optional[int] = None
+    designarena_base_url: str = "https://www.designarena.ai/"
+    designarena_request_headers: Dict[str, Any] = field(default_factory=dict)
+    designarena_request_cookies: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def load_from_env(cls) -> "Config":
@@ -102,6 +105,9 @@ class Config:
         anthropic_api_version = os.environ.get("ANTHROPIC_API_VERSION", "2023-06-01")
         admin_user_ids = _split_env_int_list(os.environ.get("ADMIN_USER_IDS"))
         designarena_poll_interval_seconds = os.environ.get("DESIGNARENA_POLL_INTERVAL_SECONDS")
+        designarena_base_url = os.environ.get("DESIGNARENA_BASE_URL", "https://www.designarena.ai/")
+        designarena_request_headers = _load_json_env(os.environ.get("DESIGNARENA_REQUEST_HEADERS")) or {}
+        designarena_request_cookies = _load_json_env(os.environ.get("DESIGNARENA_REQUEST_COOKIES")) or {}
 
         return cls(
             telegram_token=telegram_token,
@@ -130,4 +136,7 @@ class Config:
             designarena_poll_interval_seconds=int(designarena_poll_interval_seconds)
             if designarena_poll_interval_seconds
             else None,
+            designarena_base_url=designarena_base_url,
+            designarena_request_headers=designarena_request_headers,
+            designarena_request_cookies=designarena_request_cookies,
         )

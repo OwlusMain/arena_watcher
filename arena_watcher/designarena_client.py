@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import logging
-import re
-from dataclasses import dataclass
-from typing import Iterable, List, Set
-from urllib.parse import urljoin
+from dataclasses import dataclass, field
+from typing import Any, Dict, List
+from urllib.parse import urljoin, urlsplit
 
-import requests
+import cloudscraper
 
 from .arena_client import ModelEntry
 
@@ -14,355 +13,97 @@ logger = logging.getLogger(__name__)
 
 
 class DesignArenaFetchError(RuntimeError):
-    """Raised when the DesignArena bundle cannot be fetched or parsed."""
+    """Raised when the DesignArena registry cannot be fetched or parsed."""
 
 
 @dataclass(frozen=True, slots=True)
 class DesignArenaClientConfig:
     base_url: str = "https://www.designarena.ai/"
+    headers: Dict[str, Any] = field(default_factory=dict)
+    cookies: Dict[str, Any] = field(default_factory=dict)
+    timeout_seconds: int = 30
 
 
 class DesignArenaClient:
     def __init__(self, config: DesignArenaClientConfig | None = None) -> None:
         self._config = config or DesignArenaClientConfig()
-        # Match script src values for .js files (with optional query strings), case-insensitive.
-        self._script_src_regex = re.compile(r'src=["\']([^"\']+\.js[^"\']*)["\']', re.IGNORECASE)
-        self._session = requests.Session()
+        self._session = cloudscraper.create_scraper(
+            browser={"browser": "chrome", "platform": "darwin", "mobile": False}
+        )
+
+        parsed_base = urlsplit(self._config.base_url)
+        origin = f"{parsed_base.scheme}://{parsed_base.netloc}"
         self._session.headers.update(
             {
-                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+                "Accept": "application/json,text/plain,*/*",
+                "Referer": self._config.base_url,
+                "Origin": origin,
             }
         )
-
-    _ONLY_FLAGS = {
-        "agentRunnerOnly",
-        "audioOnly",
-        "graphicDesignOnly",
-        "imageOnly",
-        "slidesOnly",
-        "svgOnly",
-        "videoOnly",
-        "websiteOnly",
-    }
-    _SUPPORT_FLAGS = {
-        "supportsAudio",
-        "supportsImageEditing",
-        "supportsImageGeneration",
-        "supportsPrompt",
-        "supportsSlidesGeneration",
-        "supportsVideoGeneration",
-        "supportsVision",
-    }
+        self._session.headers.update(self._config.headers)
+        self._session.cookies.update(self._config.cookies)
 
     def fetch_models(self) -> List[ModelEntry]:
-        _, text = self._fetch_bundle_with_mapping()
-        model_block = self._find_largest_model_block(text)
-        if not model_block:
-            raise DesignArenaFetchError("No models found in the DesignArena bundle.")
-
-        objects = self._extract_model_entries(model_block)
-        if not objects:
-            raise DesignArenaFetchError("No models found in the DesignArena bundle.")
+        payload = self._fetch_registry()
+        raw_models = payload.get("models")
+        if not isinstance(raw_models, dict):
+            raise DesignArenaFetchError("DesignArena registry response did not contain a models object.")
 
         entries: list[ModelEntry] = []
-        for identifier, display_name, obj in objects:
-            raw = {"id": identifier, "name": display_name}
-            raw.update(self._parse_model_fields(obj))
-            active = raw.get("active")
+        for fallback_identifier, raw_model in raw_models.items():
+            if not isinstance(raw_model, dict):
+                continue
+
+            identifier = str(raw_model.get("id") or fallback_identifier)
+            display_name = str(raw_model.get("displayName") or raw_model.get("name") or identifier)
+            active = raw_model.get("active")
             if active is False:
                 continue
+
+            raw = dict(raw_model)
+            raw.setdefault("id", identifier)
+            raw.setdefault("displayName", display_name)
             entries.append(ModelEntry(identifier=identifier, name=display_name, raw=raw))
+
+        if not entries:
+            raise DesignArenaFetchError("No active models found in the DesignArena registry.")
         return entries
 
-    def _fetch_bundle_with_mapping(self) -> tuple[str, str]:
-        """
-        Find and fetch the JS bundle that contains the model mapping by scanning all candidate
-        script URLs from the homepage and Next.js build manifest.
-        """
+    def _fetch_registry(self) -> Dict[str, Any]:
+        registry_url = urljoin(self._config.base_url, "api/registry")
         try:
-            response = self._session.get(self._config.base_url, timeout=30)
+            response = self._session.get(registry_url, timeout=self._config.timeout_seconds)
         except Exception as exc:  # pragma: no cover - network failure
-            raise DesignArenaFetchError(f"Failed to reach {self._config.base_url}: {exc}") from exc
+            raise DesignArenaFetchError(f"Failed to reach {registry_url}: {exc}") from exc
 
-        html = response.text or ""
-        if response.status_code < 200 or response.status_code >= 300:
-            if self._looks_like_security_checkpoint(html):
-                logger.warning(
-                    "DesignArena homepage returned a security checkpoint page (status=%s).",
-                    response.status_code,
-                )
-            elif not html:
-                raise DesignArenaFetchError(
-                    f"DesignArena responded with status {response.status_code} for {response.url}."
-                )
-        candidates: Set[str] = set(self._extract_script_urls(html))
-
-        manifest_url = self._extract_manifest_url(html)
-        if manifest_url:
-            try:
-                manifest_text = self._fetch_text(urljoin(self._config.base_url, manifest_url))
-            except DesignArenaFetchError:
-                manifest_text = ""
-            if manifest_text:
-                candidates.update(self._extract_script_urls(manifest_text))
-
-        # When the root page is challenged (e.g. Vercel Security Checkpoint), the app page
-        # may still expose script references.
-        for fallback_page in ("leaderboard",):
-            try:
-                fallback_html = self._fetch_text(urljoin(self._config.base_url, fallback_page))
-            except DesignArenaFetchError:
-                continue
-            candidates.update(self._extract_script_urls(fallback_html))
-
-        if not candidates:
-            # Retry with a fresh one-off request (matches the manual repro) in case session headers/cookies
-            # influenced the response content.
-            try:
-                fallback_html = requests.get(self._config.base_url, timeout=30).text
-                candidates.update(self._extract_script_urls(fallback_html))
-            except Exception:
-                pass
-
-        tried: list[str] = []
-        if not candidates:
-            status_hint = ""
-            if self._looks_like_security_checkpoint(html):
-                status_hint = " The site is serving a Vercel Security Checkpoint page."
-            raise DesignArenaFetchError("No script candidates found in DesignArena HTML." + status_hint)
-
-        best_url: str | None = None
-        best_text: str | None = None
-        best_count = 0
-        for path in candidates:
-            url = urljoin(self._config.base_url, path)
-            try:
-                text = self._fetch_text(url)
-            except DesignArenaFetchError:
-                tried.append(url)
-                continue
-
-            block = self._find_largest_model_block(text)
-            if not block:
-                tried.append(url)
-                continue
-            entry_count = len(self._extract_model_entries(block))
-            if entry_count > best_count:
-                best_count = entry_count
-                best_url = url
-                best_text = text
-            tried.append(url)
-
-        if best_url and best_text and best_count > 0:
-            return best_url, best_text
-
-        raise DesignArenaFetchError(
-            "Could not locate DesignArena model bundle after checking scripts. Tried: "
-            + ", ".join(tried[:5])
-            + ("..." if len(tried) > 5 else "")
-        )
-
-    def _fetch_text(self, url: str) -> str:
-        try:
-            response = self._session.get(url, timeout=30)
-        except Exception as exc:  # pragma: no cover - network failure
-            raise DesignArenaFetchError(f"Failed to reach {url}: {exc}") from exc
-
+        text = response.text or ""
+        if self._looks_like_security_checkpoint(text):
+            raise self._security_checkpoint_error(registry_url, response.status_code)
         if response.status_code < 200 or response.status_code >= 300:
             raise DesignArenaFetchError(
                 f"DesignArena responded with status {response.status_code} for {response.url}."
             )
-        return response.text
 
-    def _extract_script_urls(self, text: str) -> Iterable[str]:
-        # Explicit script tags
-        for match in self._script_src_regex.finditer(text):
-            path = match.group(1)
-            if path.startswith("//"):
-                path = "https:" + path
-            if not path.startswith(("http://", "https://", "/")):
-                path = "/" + path
-            yield path
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise DesignArenaFetchError("DesignArena registry did not contain valid JSON.") from exc
 
-        # Fallback: any quoted .js reference in the text
-        for match in re.finditer(r'["\']([^"\']+\.js[^"\']*)["\']', text):
-            path = match.group(1)
-            if path.startswith("//"):
-                path = "https:" + path
-            if not path.startswith(("http://", "https://", "/")):
-                path = "/" + path
-            yield path
-
-        # Last resort: loose scan for _next/static JS paths even if unquoted
-        for match in re.finditer(r'/_next/static[^\\s><"\']+\\.js[^\\s><"\']*', text):
-            path = match.group(0)
-            yield path
-
-    def _extract_manifest_url(self, html: str) -> str | None:
-        """
-        Locate the Next.js build manifest URL within the HTML to resolve the hashed bundle path.
-        """
-        manifest_match = re.search(r'/_next/static/[^/]+/_buildManifest\\.js', html)
-        if manifest_match:
-            return manifest_match.group(0)
-        return None
-
-    def _find_matching_brace(self, text: str, start: int) -> int | None:
-        depth = 0
-        quote: str | None = None
-        escape = False
-        for index, char in enumerate(text[start:], start):
-            if escape:
-                escape = False
-                continue
-            if char == "\\":
-                escape = True
-                continue
-            if quote:
-                if char == quote:
-                    quote = None
-                continue
-            if char in ('"', "'"):
-                quote = char
-                continue
-            if char == "{":
-                depth += 1
-            elif char == "}":
-                depth -= 1
-                if depth == 0:
-                    return index
-        return None
-
-    def _extract_top_level_object_values(self, text: str, start: int) -> list[str]:
-        end = self._find_matching_brace(text, start)
-        if end is None:
-            return []
-
-        values: list[str] = []
-        depth = 0
-        quote: str | None = None
-        escape = False
-        index = start
-        while index <= end:
-            char = text[index]
-            if escape:
-                escape = False
-                index += 1
-                continue
-            if char == "\\":
-                escape = True
-                index += 1
-                continue
-            if quote:
-                if char == quote:
-                    quote = None
-                index += 1
-                continue
-            if char in ('"', "'"):
-                quote = char
-                index += 1
-                continue
-            if char == "{":
-                depth += 1
-                index += 1
-                continue
-            if char == "}":
-                depth -= 1
-                index += 1
-                continue
-            if char == ":" and depth == 1:
-                scan = index + 1
-                while scan <= end and text[scan].isspace():
-                    scan += 1
-                if scan <= end and text[scan] == "{":
-                    block_end = self._find_matching_brace(text, scan)
-                    if block_end is not None:
-                        values.append(text[scan : block_end + 1])
-                        index = block_end + 1
-                        continue
-            index += 1
-
-        return values
-
-    def _iter_object_spans(self, text: str) -> Iterable[tuple[int, int]]:
-        stack: list[int] = []
-        quote: str | None = None
-        escape = False
-        for index, char in enumerate(text):
-            if escape:
-                escape = False
-                continue
-            if char == "\\":
-                escape = True
-                continue
-            if quote:
-                if char == quote:
-                    quote = None
-                continue
-            if char in ('"', "'"):
-                quote = char
-                continue
-            if char == "{":
-                stack.append(index)
-            elif char == "}" and stack:
-                start = stack.pop()
-                yield start, index
-
-    def _find_largest_model_block(self, text: str) -> str | None:
-        best_block = None
-        best_count = 0
-        for start, end in self._iter_object_spans(text):
-            if end - start < 500:
-                continue
-            segment = text[start : end + 1]
-            if "displayName" not in segment or "id" not in segment:
-                continue
-            entries = self._extract_model_entries(segment)
-            if len(entries) > best_count:
-                best_count = len(entries)
-                best_block = segment
-        return best_block
-
-    def _extract_model_entries(self, block: str) -> list[tuple[str, str, str]]:
-        entries: list[tuple[str, str, str]] = []
-        objects = self._extract_top_level_object_values(block, 0)
-        for obj in objects:
-            id_match = re.search(r"\bid\s*:\s*['\"]([^'\"]+)['\"]", obj)
-            display_match = re.search(r"\bdisplayName\s*:\s*['\"]([^'\"]+)['\"]", obj)
-            if id_match and display_match:
-                entries.append((id_match.group(1), display_match.group(1), obj))
-        return entries
-
-    @classmethod
-    def _parse_model_fields(cls, obj: str) -> dict[str, object]:
-        fields: dict[str, object] = {}
-        for key in {"active", *cls._ONLY_FLAGS, *cls._SUPPORT_FLAGS}:
-            value = cls._extract_bool(obj, key)
-            if value is not None:
-                fields[key] = value
-
-        supported_modes = cls._extract_string_list(obj, "supportedModes")
-        if supported_modes:
-            fields["supportedModes"] = supported_modes
-        return fields
-
-    @staticmethod
-    def _extract_bool(obj: str, key: str) -> bool | None:
-        match = re.search(rf"\b{re.escape(key)}\s*:\s*(!0|!1|true|false)\b", obj)
-        if not match:
-            return None
-        value = match.group(1)
-        return value in ("!0", "true")
-
-    @staticmethod
-    def _extract_string_list(obj: str, key: str) -> list[str]:
-        match = re.search(rf"\b{re.escape(key)}\s*:\s*\[([^\]]*)\]", obj)
-        if not match:
-            return []
-        raw = match.group(1)
-        return [item for item in re.findall(r"['\"]([^'\"]+)['\"]", raw) if item]
+        if not isinstance(payload, dict):
+            raise DesignArenaFetchError("DesignArena registry returned an unexpected payload type.")
+        return payload
 
     @staticmethod
     def _looks_like_security_checkpoint(text: str) -> bool:
         return "Vercel Security Checkpoint" in text
+
+    @staticmethod
+    def _security_checkpoint_error(url: str, status_code: int) -> DesignArenaFetchError:
+        return DesignArenaFetchError(
+            "DesignArena is serving a Vercel Security Checkpoint"
+            f" (status {status_code}) for {url}. "
+            "Provide valid DESIGNARENA_REQUEST_HEADERS and/or DESIGNARENA_REQUEST_COOKIES "
+            "for this environment if the site now requires a clearance token."
+        )

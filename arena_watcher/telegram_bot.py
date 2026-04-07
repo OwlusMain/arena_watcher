@@ -726,11 +726,9 @@ class ArenaWatcherBot:
     def _snapshot_designarena_model(
         self, entry: ModelEntry, existing: TrackedModel | None = None
     ) -> TrackedModel:
-        input_caps, output_caps = self._designarena_capability_lists(entry)
         return TrackedModel(
             name=entry.name,
-            input_capabilities=input_caps,
-            output_capabilities=output_caps,
+            modes=self._designarena_modes(entry),
             tag=existing.tag if existing else None,
         )
 
@@ -785,86 +783,27 @@ class ArenaWatcherBot:
         return [str(key) for key, value in node.items() if value]
 
     @staticmethod
-    def _designarena_capability_lists(
-        entry: ModelEntry,
-    ) -> tuple[Optional[list[str]], Optional[list[str]]]:
+    def _designarena_modes(entry: ModelEntry) -> Optional[list[str]]:
         raw = entry.raw if isinstance(entry.raw, dict) else {}
         if not raw:
-            return None, None
+            return None
 
-        input_caps: set[str] = set()
-        output_caps: set[str] = set()
-
-        only_flags = {
-            "agentRunnerOnly": "agent",
-            "audioOnly": "audio",
-            "graphicDesignOnly": "graphic-design",
-            "imageOnly": "image",
-            "slidesOnly": "slides",
-            "svgOnly": "svg",
-            "videoOnly": "video",
-            "websiteOnly": "website",
-        }
-        support_flags = {
-            "supportsImageGeneration": "image",
-            "supportsImageEditing": "image-edit",
-            "supportsVideoGeneration": "video",
-            "supportsAudio": "audio",
-            "supportsSlidesGeneration": "slides",
-        }
-
-        for key, label in only_flags.items():
-            if raw.get(key) is True:
-                output_caps.add(label)
-
-        for key, label in support_flags.items():
-            if raw.get(key) is True:
-                output_caps.add(label)
-
-        if raw.get("supportsImageEditing") is True:
-            output_caps.add("image")
-            input_caps.add("image")
-
-        if raw.get("supportsVision") is True:
-            input_caps.add("image")
-
-        supported_modes = raw.get("supportedModes")
-        if isinstance(supported_modes, list):
-            for mode in supported_modes:
-                if not isinstance(mode, str):
+        arenas = raw.get("arenas") if isinstance(raw.get("arenas"), dict) else {}
+        modes: set[str] = set()
+        for namespace, raw_modes in arenas.items():
+            if not isinstance(raw_modes, list):
+                continue
+            for mode in raw_modes:
+                if not isinstance(mode, str) or not mode:
                     continue
-                if mode == "tts":
-                    output_caps.add("audio:tts")
-                elif mode == "sts":
-                    output_caps.add("audio:sts")
-                    input_caps.add("audio")
-                elif mode == "music":
-                    output_caps.add("audio:music")
+                if namespace == "models":
+                    modes.add(mode)
+                else:
+                    modes.add(f"{namespace}:{mode}")
 
-        if any(key.startswith("audio:") for key in output_caps):
-            output_caps.add("audio")
-
-        if "text" in output_caps:
-            input_caps.add("text")
-
-        text_triggers = (
-            raw.get("supportsPrompt"),
-            raw.get("supportsImageGeneration"),
-            raw.get("supportsImageEditing"),
-            raw.get("supportsVideoGeneration"),
-            raw.get("supportsAudio"),
-            raw.get("supportsSlidesGeneration"),
-        )
-        if any(trigger is True for trigger in text_triggers):
-            input_caps.add("text")
-
-        if not output_caps:
-            output_caps.add("text")
-            input_caps.add("text")
-        elif not input_caps:
-            input_caps.add("text")
-
-        return sorted(input_caps), sorted(output_caps)
+        if not modes:
+            return None
+        return sorted(modes)
 
     def _format_model_name(self, model: TrackedModel, fallback_identifier: str | None = None) -> str:
         base_name = model.name or fallback_identifier or "unknown"
@@ -899,6 +838,13 @@ class ArenaWatcherBot:
         input_summary = summarize(input_capabilities)
         output_summary = summarize(output_capabilities)
         return f" (input: {input_summary}; output: {output_summary})"
+
+    def _format_modes(self, modes: Optional[Sequence[str]]) -> str:
+        if modes is None:
+            return ""
+        if not modes:
+            return " (modes: none)"
+        return " (modes: " + ", ".join(self._escape(mode) for mode in modes) + ")"
 
     def _format_capability_change(self, diff: CapabilityDiff) -> str:
         segments = []
@@ -1144,7 +1090,7 @@ class ArenaWatcherBot:
         if added:
             lines = "\n".join(
                 f"• {self._format_model_name(model)}"
-                f"{self._format_capabilities(model.input_capabilities, model.output_capabilities)}"
+                f"{self._format_modes(model.modes)}"
                 for model in added
             )
             added_message = f"<b>🆕 New DesignArena models available:</b>\n{lines}"
@@ -1153,7 +1099,7 @@ class ArenaWatcherBot:
         if removed:
             lines = "\n".join(
                 f"• {self._format_model_name(model, identifier)}"
-                f"{self._format_capabilities(model.input_capabilities, model.output_capabilities)}"
+                f"{self._format_modes(model.modes)}"
                 for identifier, model in removed
             )
             removed_message = f"<b>❌ Removed models from DesignArena:</b>\n{lines}"
