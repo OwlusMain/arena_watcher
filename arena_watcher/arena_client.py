@@ -150,7 +150,7 @@ class ArenaClient:
 
     @staticmethod
     def _extract_name(item: Dict[str, Any], fallback: str) -> str:
-        for key in ("name", "publicName", "displayName"):
+        for key in ("displayName", "publicName", "name"):
             if key in item and item[key]:
                 return str(item[key])
         return fallback
