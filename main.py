@@ -4,6 +4,7 @@ import logging
 import sys
 
 from arena_watcher.arena_client import ArenaClient
+from arena_watcher.arena_direct_client import ArenaDirectClient, ArenaDirectClientConfig
 from arena_watcher.anthropic_models_client import (
     AnthropicModelsClient,
     AnthropicModelsClientConfig,
@@ -38,6 +39,24 @@ def main() -> int:
         headers=config.request_headers,
         cookies=config.request_cookies,
     )
+    arena_direct_client = None
+    if config.arena_direct_url:
+        arena_direct_client = ArenaDirectClient(
+            ArenaDirectClientConfig(
+                url=config.arena_direct_url,
+                request_template=config.arena_direct_request_template,
+                headers=config.arena_direct_headers,
+                cookies=config.arena_direct_cookies,
+                bootstrap_url=config.arena_direct_bootstrap_url,
+                recaptcha_v3_token=config.arena_direct_recaptcha_v3_token,
+                recaptcha_v3_token_command=config.arena_direct_recaptcha_v3_token_command,
+                text_response_path=config.arena_direct_text_response_path,
+                image_url_response_path=config.arena_direct_image_url_response_path,
+                image_base64_response_path=config.arena_direct_image_base64_response_path,
+                image_mime_type_response_path=config.arena_direct_image_mime_type_response_path,
+                timeout_seconds=config.arena_direct_timeout_seconds,
+            )
+        )
     google_client = None
     if config.google_api_key:
         google_client = GoogleModelsClient(
@@ -72,10 +91,11 @@ def main() -> int:
         config,
         arena_client,
         state_store,
-        google_client,
-        openai_client,
-        anthropic_client,
-        designarena_client,
+        arena_direct_client=arena_direct_client,
+        google_models_client=google_client,
+        openai_models_client=openai_client,
+        anthropic_models_client=anthropic_client,
+        designarena_client=designarena_client,
     )
     bot.run()
     return 0

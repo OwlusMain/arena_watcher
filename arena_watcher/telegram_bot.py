@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import time
 from dataclasses import dataclass
 from html import escape
 from typing import Any, Optional, Sequence
 
-from telegram import Update
+from telegram import InputFile, Update
 from telegram.constants import ChatMemberStatus, ChatType
 from telegram.ext import (
     AIORateLimiter,
@@ -21,12 +22,15 @@ from telegram.ext import (
 )
 
 from .arena_client import ArenaClient, ArenaFetchError, ModelEntry
+from .arena_direct_client import ArenaDirectClient, ArenaDirectProbeError
 from .anthropic_models_client import AnthropicModelFetchError, AnthropicModelsClient
 from .config import Config
 from .google_models_client import GoogleModelFetchError, GoogleModelsClient
+from .model_probe import ModelProbeResult, infer_probe_kind, probe_prompt_for
 from .openai_models_client import OpenAIModelFetchError, OpenAIModelsClient
 from .designarena_client import DesignArenaClient, DesignArenaFetchError
 from .state_store import StateStore, TrackedModel, WatcherState
+from .telegram_messages import split_html_message, split_text_message
 
 
 @dataclass(slots=True)
@@ -48,6 +52,19 @@ class CapabilityDiff:
             )
         )
 
+
+@dataclass(frozen=True, slots=True)
+class ArenaModelChange:
+    identifier: str
+    model: TrackedModel
+
+
+@dataclass(frozen=True, slots=True)
+class ArenaProbeNotification:
+    identifier: str
+    model: TrackedModel
+    result: ModelProbeResult
+
 logger = logging.getLogger(__name__)
 
 
@@ -67,6 +84,7 @@ class ArenaWatcherBot:
         config: Config,
         arena_client: ArenaClient,
         state_store: StateStore,
+        arena_direct_client: ArenaDirectClient | None = None,
         google_models_client: GoogleModelsClient | None = None,
         openai_models_client: OpenAIModelsClient | None = None,
         anthropic_models_client: AnthropicModelsClient | None = None,
@@ -74,6 +92,7 @@ class ArenaWatcherBot:
     ) -> None:
         self._config = config
         self._arena_client = arena_client
+        self._arena_direct_client = arena_direct_client
         self._google_client = google_models_client
         self._openai_client = openai_models_client
         self._anthropic_client = anthropic_models_client
@@ -152,7 +171,8 @@ class ArenaWatcherBot:
             if chat_id not in self._state.chats:
                 self._state.chats.add(chat_id)
                 self._store.save(self._state)
-        await context.bot.send_message(
+        await self._send_message(
+            context,
             chat_id=chat_id,
             text=(
                 "👋 I'll notify this chat about Battle mode model additions/removals "
@@ -168,12 +188,14 @@ class ArenaWatcherBot:
             if chat_id in self._state.chats:
                 self._state.chats.remove(chat_id)
                 self._store.save(self._state)
-                await context.bot.send_message(
+                await self._send_message(
+                    context,
                     chat_id=chat_id,
                     text="I'll stop sending Battle mode updates to this chat.",
                 )
             else:
-                await context.bot.send_message(
+                await self._send_message(
+                    context,
                     chat_id=chat_id,
                     text="This chat was not subscribed to updates.",
                 )
@@ -185,14 +207,16 @@ class ArenaWatcherBot:
             return
         chat_id = chat.id
         if not self._is_admin(user.id):
-            await context.bot.send_message(
+            await self._send_message(
+                context,
                 chat_id=chat_id,
                 text="You are not allowed to set model tags.",
             )
             return
 
         if not context.args:
-            await context.bot.send_message(
+            await self._send_message(
+                context,
                 chat_id=chat_id,
                 text="Usage: /tag <identifier|name> <tag text>. Send an empty tag to clear it.",
             )
@@ -251,7 +275,8 @@ class ArenaWatcherBot:
                 status = "updated"
 
         if status == "not_found":
-            await context.bot.send_message(
+            await self._send_message(
+                context,
                 chat_id=chat_id,
                 text=f"Could not find a model matching {self._escape(target_key)}.",
             )
@@ -261,7 +286,8 @@ class ArenaWatcherBot:
             lines = "\n".join(
                 f"• {self._escape(identifier)} ({source})" for identifier, source in ambiguous_matches
             )
-            await context.bot.send_message(
+            await self._send_message(
+                context,
                 chat_id=chat_id,
                 text=(
                     "Multiple models matched that key. Please retry with an exact identifier:\n"
@@ -271,7 +297,8 @@ class ArenaWatcherBot:
             return
 
         if not updated_model or not updated_identifier:
-            await context.bot.send_message(
+            await self._send_message(
+                context,
                 chat_id=chat_id,
                 text="No model was updated.",
             )
@@ -279,7 +306,8 @@ class ArenaWatcherBot:
 
         label = self._format_model_name(updated_model, updated_identifier)
         if new_tag:
-            await context.bot.send_message(
+            await self._send_message(
+                context,
                 chat_id=chat_id,
                 text=f"✅ Tag added to {label} [{target_source}].",
                 parse_mode="HTML",
@@ -292,7 +320,8 @@ class ArenaWatcherBot:
                     source=target_source or "unknown",
                 )
         else:
-            await context.bot.send_message(
+            await self._send_message(
+                context,
                 chat_id=chat_id,
                 text=f"Tag cleared for {label} [{target_source}].",
                 parse_mode="HTML",
@@ -320,7 +349,8 @@ class ArenaWatcherBot:
                 self._state.chats.add(chat_id)
                 self._store.save(self._state)
             try:
-                await context.bot.send_message(
+                await self._send_message(
+                    context,
                     chat_id=chat_id,
                     text=(
                         "Thanks for adding me! I'll post Arena Battle mode updates here. "
@@ -452,8 +482,11 @@ class ArenaWatcherBot:
                 return
 
             added_models = sorted(
-                (snapshots[identifier] for identifier in added_ids),
-                key=lambda model: model.name.lower(),
+                (
+                    ArenaModelChange(identifier=identifier, model=snapshots[identifier])
+                    for identifier in added_ids
+                ),
+                key=lambda item: item.model.name.lower(),
             )
             removed_models = sorted(
                 ((identifier, previous[identifier]) for identifier in removed_ids),
@@ -875,7 +908,7 @@ class ArenaWatcherBot:
     async def _notify_changes(
         self,
         context: CallbackContext,
-        added: Sequence[TrackedModel],
+        added: Sequence[ArenaModelChange],
         removed: Sequence[tuple[str, TrackedModel]],
         capability_updates: Sequence[CapabilityDiff],
         name_updates: Sequence[tuple[str, str, TrackedModel]],
@@ -884,12 +917,14 @@ class ArenaWatcherBot:
             logger.debug("No chats to notify for model changes.")
             return
 
+        probes = await self._collect_arena_probes(added)
+
         added_message = ""
         if added:
             lines = "\n".join(
-                f"• {self._format_model_name(model)}"
-                f"{self._format_capabilities(model.input_capabilities, model.output_capabilities)}"
-                for model in added
+                f"• {self._format_model_name(item.model, item.identifier)}"
+                f"{self._format_capabilities(item.model.input_capabilities, item.model.output_capabilities)}"
+                for item in added
             )
             added_message = f"<b>🆕 New models on Arena:</b>\n{lines}"
 
@@ -928,9 +963,166 @@ class ArenaWatcherBot:
 
         for chat_id in list(self._state.chats):
             try:
-                await context.bot.send_message(chat_id=chat_id, text=message, parse_mode="HTML")
+                await self._send_message(
+                    context,
+                    chat_id=chat_id,
+                    text=message,
+                    parse_mode="HTML",
+                )
+                await self._send_arena_probe_notifications(context, chat_id, probes)
             except Exception as exc:  # pragma: no cover - network failure
                 logger.warning("Failed to send update to chat %s: %s", chat_id, exc)
+
+    async def _collect_arena_probes(
+        self,
+        added: Sequence[ArenaModelChange],
+    ) -> list[ArenaProbeNotification]:
+        if not added or not self._arena_direct_client:
+            return []
+
+        tasks = [asyncio.to_thread(self._probe_arena_model, item) for item in added]
+        results = await asyncio.gather(*tasks)
+        return [result for result in results if result is not None]
+
+    def _probe_arena_model(self, item: ArenaModelChange) -> ArenaProbeNotification | None:
+        if not self._arena_direct_client:
+            return None
+
+        kind = infer_probe_kind(
+            item.identifier,
+            item.model.name,
+            input_capabilities=item.model.input_capabilities,
+            output_capabilities=item.model.output_capabilities,
+            modes=item.model.modes,
+        )
+        try:
+            result = self._arena_direct_client.probe_model(item.identifier, kind)
+        except ArenaDirectProbeError as exc:
+            result = ModelProbeResult(
+                kind=kind,
+                prompt=probe_prompt_for(kind),
+                error=str(exc),
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            result = ModelProbeResult(
+                kind=kind,
+                prompt=probe_prompt_for(kind),
+                error=f"Unexpected Arena probe error: {exc}",
+            )
+        return ArenaProbeNotification(identifier=item.identifier, model=item.model, result=result)
+
+    async def _send_arena_probe_notifications(
+        self,
+        context: CallbackContext,
+        chat_id: int,
+        probes: Sequence[ArenaProbeNotification],
+    ) -> None:
+        for probe in probes:
+            try:
+                if probe.result.failed:
+                    await self._send_message(
+                        context,
+                        chat_id=chat_id,
+                        text=self._format_arena_probe_error(probe),
+                        parse_mode="HTML",
+                    )
+                    continue
+
+                if probe.result.kind == "text":
+                    await self._send_message(
+                        context,
+                        chat_id=chat_id,
+                        text=self._format_arena_text_probe(probe),
+                        parse_mode="HTML",
+                    )
+                    continue
+
+                caption = self._format_arena_image_probe_caption(probe)
+                if probe.result.image_url:
+                    await context.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=probe.result.image_url,
+                        caption=caption,
+                        parse_mode="HTML",
+                    )
+                    continue
+
+                if probe.result.image_bytes:
+                    await context.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=InputFile(
+                            io.BytesIO(probe.result.image_bytes),
+                            filename=self._probe_image_filename(probe.result.image_mime_type),
+                        ),
+                        caption=caption,
+                        parse_mode="HTML",
+                    )
+                    continue
+
+                await self._send_message(
+                    context,
+                    chat_id=chat_id,
+                    text=self._format_arena_probe_error(
+                        ArenaProbeNotification(
+                            identifier=probe.identifier,
+                            model=probe.model,
+                            result=ModelProbeResult(
+                                kind="image",
+                                prompt=probe.result.prompt,
+                                error="Probe completed but did not include image data.",
+                            ),
+                        )
+                    ),
+                    parse_mode="HTML",
+                )
+            except Exception as exc:  # pragma: no cover - network failure
+                logger.warning(
+                    "Failed to send Arena probe notification for %s to chat %s: %s",
+                    probe.identifier,
+                    chat_id,
+                    exc,
+                )
+
+    def _format_arena_text_probe(self, probe: ArenaProbeNotification) -> str:
+        label = self._format_model_name(probe.model, probe.identifier)
+        prompt = self._escape(probe.result.prompt)
+        response = self._escape(self._truncate_text(probe.result.text or "", 1500))
+        return (
+            f"<b>🧪 Direct Arena probe:</b>\n"
+            f"Model: {label}\n"
+            f"Prompt: {prompt}\n"
+            f"Response:\n<pre>{response}</pre>"
+        )
+
+    def _format_arena_image_probe_caption(self, probe: ArenaProbeNotification) -> str:
+        label = self._format_model_name(probe.model, probe.identifier)
+        prompt = self._escape(self._truncate_text(probe.result.prompt, 300))
+        return f"<b>🧪 Direct Arena image probe:</b>\nModel: {label}\nPrompt: {prompt}"
+
+    def _format_arena_probe_error(self, probe: ArenaProbeNotification) -> str:
+        label = self._format_model_name(probe.model, probe.identifier)
+        prompt = self._escape(probe.result.prompt)
+        error = self._escape(self._truncate_text(probe.result.error or "Unknown error.", 800))
+        return (
+            f"<b>⚠️ Direct Arena probe failed:</b>\n"
+            f"Model: {label}\n"
+            f"Prompt: {prompt}\n"
+            f"Error: {error}"
+        )
+
+    @staticmethod
+    def _probe_image_filename(mime_type: str | None) -> str:
+        if mime_type == "image/jpeg":
+            return "arena-probe.jpg"
+        if mime_type == "image/webp":
+            return "arena-probe.webp"
+        return "arena-probe.png"
+
+    @staticmethod
+    def _truncate_text(value: str, limit: int) -> str:
+        if len(value) <= limit:
+            return value
+        return value[: limit - 3].rstrip() + "..."
 
     async def _notify_google_changes(
         self,
@@ -975,7 +1167,12 @@ class ArenaWatcherBot:
 
         for chat_id in list(self._state.chats):
             try:
-                await context.bot.send_message(chat_id=chat_id, text=message, parse_mode="HTML")
+                await self._send_message(
+                    context,
+                    chat_id=chat_id,
+                    text=message,
+                    parse_mode="HTML",
+                )
             except Exception as exc:  # pragma: no cover - network failure
                 logger.warning("Failed to send Google model update to chat %s: %s", chat_id, exc)
 
@@ -1022,7 +1219,12 @@ class ArenaWatcherBot:
 
         for chat_id in list(self._state.chats):
             try:
-                await context.bot.send_message(chat_id=chat_id, text=message, parse_mode="HTML")
+                await self._send_message(
+                    context,
+                    chat_id=chat_id,
+                    text=message,
+                    parse_mode="HTML",
+                )
             except Exception as exc:  # pragma: no cover - network failure
                 logger.warning("Failed to send OpenAI model update to chat %s: %s", chat_id, exc)
 
@@ -1069,7 +1271,12 @@ class ArenaWatcherBot:
 
         for chat_id in list(self._state.chats):
             try:
-                await context.bot.send_message(chat_id=chat_id, text=message, parse_mode="HTML")
+                await self._send_message(
+                    context,
+                    chat_id=chat_id,
+                    text=message,
+                    parse_mode="HTML",
+                )
             except Exception as exc:  # pragma: no cover - network failure
                 logger.warning(
                     "Failed to send Anthropic model update to chat %s: %s", chat_id, exc
@@ -1120,7 +1327,12 @@ class ArenaWatcherBot:
 
         for chat_id in list(self._state.chats):
             try:
-                await context.bot.send_message(chat_id=chat_id, text=message, parse_mode="HTML")
+                await self._send_message(
+                    context,
+                    chat_id=chat_id,
+                    text=message,
+                    parse_mode="HTML",
+                )
             except Exception as exc:  # pragma: no cover - network failure
                 logger.warning("Failed to send DesignArena model update to chat %s: %s", chat_id, exc)
 
@@ -1140,9 +1352,44 @@ class ArenaWatcherBot:
 
         for chat_id in list(self._state.chats):
             try:
-                await context.bot.send_message(chat_id=chat_id, text=message, parse_mode="HTML")
+                await self._send_message(
+                    context,
+                    chat_id=chat_id,
+                    text=message,
+                    parse_mode="HTML",
+                )
             except Exception as exc:  # pragma: no cover - network failure
                 logger.warning("Failed to send tag update to chat %s: %s", chat_id, exc)
+
+    async def _send_message(
+        self,
+        context: CallbackContext,
+        *,
+        chat_id: int,
+        text: str,
+        parse_mode: str | None = None,
+    ) -> None:
+        chunks = (
+            split_html_message(text)
+            if parse_mode == "HTML"
+            else split_text_message(text)
+        )
+        if len(chunks) > 1:
+            logger.info(
+                "Splitting an oversized Telegram message into %d parts for chat %s.",
+                len(chunks),
+                chat_id,
+            )
+
+        for chunk in chunks:
+            if parse_mode:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=chunk,
+                    parse_mode=parse_mode,
+                )
+            else:
+                await context.bot.send_message(chat_id=chat_id, text=chunk)
 
     def _is_admin(self, user_id: int | None) -> bool:
         if user_id is None:

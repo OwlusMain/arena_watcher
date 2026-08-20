@@ -30,7 +30,7 @@ def _split_env_int_list(value: Optional[str]) -> List[int]:
     return integers
 
 
-def _load_json_env(value: Optional[str]) -> Optional[Dict[str, Any]]:
+def _load_json_env(value: Optional[str]) -> Optional[Any]:
     if not value:
         return None
     try:
@@ -53,6 +53,18 @@ class Config:
     state_path: Path = DEFAULT_STATE_PATH
     request_headers: Dict[str, Any] = field(default_factory=dict)
     request_cookies: Dict[str, Any] = field(default_factory=dict)
+    arena_direct_url: Optional[str] = None
+    arena_direct_request_template: Optional[Any] = None
+    arena_direct_headers: Dict[str, Any] = field(default_factory=dict)
+    arena_direct_cookies: Dict[str, Any] = field(default_factory=dict)
+    arena_direct_bootstrap_url: Optional[str] = None
+    arena_direct_recaptcha_v3_token: Optional[str] = None
+    arena_direct_recaptcha_v3_token_command: Optional[str] = None
+    arena_direct_text_response_path: List[str] = field(default_factory=list)
+    arena_direct_image_url_response_path: List[str] = field(default_factory=list)
+    arena_direct_image_base64_response_path: List[str] = field(default_factory=list)
+    arena_direct_image_mime_type_response_path: List[str] = field(default_factory=list)
+    arena_direct_timeout_seconds: int = 60
     google_api_key: Optional[str] = None
     google_poll_interval_seconds: Optional[int] = None
     openai_api_key: Optional[str] = None
@@ -91,6 +103,32 @@ class Config:
 
         headers = _load_json_env(os.environ.get("ARENA_REQUEST_HEADERS")) or {}
         cookies = _load_json_env(os.environ.get("ARENA_REQUEST_COOKIES")) or {}
+        arena_direct_url = os.environ.get("ARENA_DIRECT_URL")
+        arena_direct_request_template = _load_json_env(
+            os.environ.get("ARENA_DIRECT_REQUEST_TEMPLATE")
+        )
+        arena_direct_headers = _load_json_env(os.environ.get("ARENA_DIRECT_HEADERS")) or headers
+        arena_direct_cookies = _load_json_env(os.environ.get("ARENA_DIRECT_COOKIES")) or cookies
+        arena_direct_bootstrap_url = os.environ.get("ARENA_DIRECT_BOOTSTRAP_URL")
+        arena_direct_recaptcha_v3_token = os.environ.get("ARENA_DIRECT_RECAPTCHA_V3_TOKEN")
+        arena_direct_recaptcha_v3_token_command = os.environ.get(
+            "ARENA_DIRECT_RECAPTCHA_V3_TOKEN_COMMAND"
+        )
+        arena_direct_text_response_path = _split_env_list(
+            os.environ.get("ARENA_DIRECT_TEXT_RESPONSE_PATH")
+        )
+        arena_direct_image_url_response_path = _split_env_list(
+            os.environ.get("ARENA_DIRECT_IMAGE_URL_RESPONSE_PATH")
+        )
+        arena_direct_image_base64_response_path = _split_env_list(
+            os.environ.get("ARENA_DIRECT_IMAGE_BASE64_RESPONSE_PATH")
+        )
+        arena_direct_image_mime_type_response_path = _split_env_list(
+            os.environ.get("ARENA_DIRECT_IMAGE_MIME_TYPE_RESPONSE_PATH")
+        )
+        arena_direct_timeout_seconds = int(
+            os.environ.get("ARENA_DIRECT_TIMEOUT_SECONDS", "60")
+        )
 
         google_api_key = (
             os.environ.get("GOOGLE_API_KEY")
@@ -119,6 +157,18 @@ class Config:
             state_path=state_path,
             request_headers=headers,
             request_cookies=cookies,
+            arena_direct_url=arena_direct_url,
+            arena_direct_request_template=arena_direct_request_template,
+            arena_direct_headers=arena_direct_headers,
+            arena_direct_cookies=arena_direct_cookies,
+            arena_direct_bootstrap_url=arena_direct_bootstrap_url,
+            arena_direct_recaptcha_v3_token=arena_direct_recaptcha_v3_token,
+            arena_direct_recaptcha_v3_token_command=arena_direct_recaptcha_v3_token_command,
+            arena_direct_text_response_path=arena_direct_text_response_path,
+            arena_direct_image_url_response_path=arena_direct_image_url_response_path,
+            arena_direct_image_base64_response_path=arena_direct_image_base64_response_path,
+            arena_direct_image_mime_type_response_path=arena_direct_image_mime_type_response_path,
+            arena_direct_timeout_seconds=arena_direct_timeout_seconds,
             google_api_key=google_api_key,
             google_poll_interval_seconds=int(google_poll_interval_seconds)
             if google_poll_interval_seconds
