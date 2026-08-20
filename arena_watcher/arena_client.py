@@ -69,6 +69,17 @@ class ArenaClient:
 
     def fetch_models(self) -> List[ModelEntry]:
         try:
+            return self._fetch_models_once()
+        except ArenaFetchError as exc:
+            logger.warning(
+                "Arena fetch failed with the current session; retrying with a fresh session: %s",
+                exc,
+            )
+            self._scraper = cloudscraper.create_scraper()
+            return self._fetch_models_once()
+
+    def _fetch_models_once(self) -> List[ModelEntry]:
+        try:
             response = self._scraper.get(
                 self._models_url,
                 headers=self._headers,
@@ -107,7 +118,11 @@ class ArenaClient:
         return entries
 
     def _parse_initial_models(self, html: str) -> List[Dict[str, Any]]:
-        array_start = html.find('initialModels\\":') + len('initialModels\\":')
+        marker = 'initialModels\\":'
+        marker_start = html.find(marker)
+        if marker_start < 0:
+            raise ArenaFetchError("Arena response did not contain an initialModels array.")
+        array_start = marker_start + len(marker)
 
         depth = 0
         array_end: Optional[int] = None
