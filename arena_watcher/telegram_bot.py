@@ -190,9 +190,14 @@ class ArenaWatcherBot:
             )
             self._crowd_runner = web.AppRunner(api.build_app(), access_log=None)
             await self._crowd_runner.setup()
-            await web.TCPSite(
-                self._crowd_runner, self._config.crowd_api_host, self._config.crowd_api_port
-            ).start()
+            try:
+                await web.TCPSite(
+                    self._crowd_runner, self._config.crowd_api_host, self._config.crowd_api_port
+                ).start()
+            except OSError:
+                # The API is an add-on; keep the watcher running without it.
+                logger.exception("Crowd API failed to start; continuing without it.")
+                return
             logger.info(
                 "Crowd API listening on %s:%s",
                 self._config.crowd_api_host,
