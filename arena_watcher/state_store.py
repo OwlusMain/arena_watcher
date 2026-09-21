@@ -35,15 +35,19 @@ class TrackedModel:
     output_capabilities: Optional[List[str]] = None
     modes: Optional[List[str]] = None
     tag: Optional[str] = None
+    user_selectable: Optional[bool] = None
 
     def to_json(self) -> Dict[str, Any]:
-        return {
+        data: Dict[str, Any] = {
             "name": self.name,
             "input_capabilities": self.input_capabilities,
             "output_capabilities": self.output_capabilities,
             "modes": self.modes,
             "tag": self.tag,
         }
+        if self.user_selectable is not None:
+            data["user_selectable"] = self.user_selectable
+        return data
 
     @classmethod
     def from_json(cls, data: Any) -> "TrackedModel":
@@ -56,6 +60,9 @@ class TrackedModel:
             output_capabilities=_normalize_capability_list(data.get("output_capabilities")),
             modes=_normalize_capability_list(data.get("modes")),
             tag=_normalize_tag(data.get("tag")),
+            user_selectable=data.get("user_selectable")
+            if isinstance(data.get("user_selectable"), bool)
+            else None,
         )
 
 
@@ -67,6 +74,7 @@ class WatcherState:
     anthropic_models: Dict[str, TrackedModel] = field(default_factory=dict)
     designarena_models: Dict[str, TrackedModel] = field(default_factory=dict)
     removal_waitlist: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    crowd: Dict[str, Any] = field(default_factory=dict)
     chats: Set[int] = field(default_factory=set)
 
     def to_json(self) -> Dict[str, Any]:
@@ -96,6 +104,7 @@ class WatcherState:
                 for source, entries in sorted(self.removal_waitlist.items())
                 if isinstance(entries, dict) and entries
             },
+            "crowd": self.crowd,
             "chats": sorted(self.chats),
         }
 
@@ -173,6 +182,7 @@ class WatcherState:
             anthropic_models=anthropic_models,
             designarena_models=designarena_models,
             removal_waitlist=removal_waitlist,
+            crowd=data.get("crowd") if isinstance(data.get("crowd"), dict) else {},
             chats=set(int(chat) for chat in data.get("chats", [])),
         )
 

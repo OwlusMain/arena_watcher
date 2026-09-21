@@ -6,15 +6,18 @@ import logging
 import time
 from dataclasses import dataclass
 from html import escape
+from types import SimpleNamespace
 from typing import Any, Optional, Sequence
 
-from telegram import InputFile, Update
+from aiohttp import web
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Update
 from telegram.constants import ChatMemberStatus, ChatType
 from telegram.ext import (
     AIORateLimiter,
     Application,
     ApplicationBuilder,
     CallbackContext,
+    CallbackQueryHandler,
     CommandHandler,
     ChatMemberHandler,
     ContextTypes,
@@ -25,6 +28,8 @@ from .arena_client import ArenaClient, ArenaFetchError, ModelEntry
 from .arena_direct_client import ArenaDirectClient, ArenaDirectProbeError
 from .anthropic_models_client import AnthropicModelFetchError, AnthropicModelsClient
 from .config import Config
+from .crowd_api import CrowdApi, RateLimiter
+from .crowd_ledger import CrowdLedger
 from .google_models_client import GoogleModelFetchError, GoogleModelsClient
 from .model_probe import ModelProbeResult, infer_probe_kind, probe_prompt_for
 from .openai_models_client import OpenAIModelFetchError, OpenAIModelsClient
@@ -102,17 +107,30 @@ class ArenaWatcherBot:
         self._state_lock = asyncio.Lock()
         self._last_snapshot: dict[str, TrackedModel] = dict(self._state.known_models)
         self._admin_user_ids: set[int] = set(config.admin_user_ids)
+        self._crowd_ledger = CrowdLedger(
+            self._state.crowd, config.crowd_quorum, config.crowd_trusted_installs
+        )
+        self._crowd_runner: web.AppRunner | None = None
+        self._background_tasks: set[asyncio.Task[Any]] = set()
+        # Caps review DMs so a burst of fake installs cannot flood the admins;
+        # anything beyond it is still listed by /crowd.
+        self._crowd_review_limiter = RateLimiter(capacity=20, per_seconds=3600)
         self._app: Application = (
             ApplicationBuilder()
             .token(config.telegram_token)
             .rate_limiter(AIORateLimiter(max_retries=3))
             .job_queue(JobQueue())
             .post_init(self._on_startup)
+            .post_shutdown(self._on_shutdown)
             .build()
         )
         self._app.add_handler(CommandHandler("start", self._handle_start))
         self._app.add_handler(CommandHandler("stop", self._handle_stop))
         self._app.add_handler(CommandHandler("tag", self._handle_tag))
+        self._app.add_handler(CommandHandler("crowd", self._handle_crowd_status))
+        self._app.add_handler(CommandHandler("crowdtrust", self._handle_crowd_trust))
+        self._app.add_handler(CommandHandler("crowdban", self._handle_crowd_ban))
+        self._app.add_handler(CallbackQueryHandler(self._handle_crowd_callback, pattern=r"^crowd:"))
         self._app.add_handler(
             ChatMemberHandler(self._handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER)
         )
@@ -162,6 +180,28 @@ class ArenaWatcherBot:
 
     async def _on_startup(self, _: Application) -> None:
         logger.info("Arena watcher bot started with %d stored chats.", len(self._state.chats))
+        if self._config.crowd_api_port and self._config.crowd_api_secret:
+            api = CrowdApi(
+                secret=self._config.crowd_api_secret,
+                pow_bits=self._config.crowd_pow_bits,
+                models_provider=self._crowd_models_payload,
+                sightings_handler=self._handle_crowd_sightings,
+                is_banned=self._crowd_ledger.is_banned,
+            )
+            self._crowd_runner = web.AppRunner(api.build_app(), access_log=None)
+            await self._crowd_runner.setup()
+            await web.TCPSite(
+                self._crowd_runner, self._config.crowd_api_host, self._config.crowd_api_port
+            ).start()
+            logger.info(
+                "Crowd API listening on %s:%s",
+                self._config.crowd_api_host,
+                self._config.crowd_api_port,
+            )
+
+    async def _on_shutdown(self, _: Application) -> None:
+        if self._crowd_runner:
+            await self._crowd_runner.cleanup()
 
     async def _handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.effective_chat:
@@ -747,11 +787,13 @@ class ArenaWatcherBot:
 
     def _snapshot_model(self, entry: ModelEntry, existing: TrackedModel | None = None) -> TrackedModel:
         input_caps, output_caps = self._capability_lists(entry)
+        user_selectable = entry.raw.get("userSelectable") if isinstance(entry.raw, dict) else None
         return TrackedModel(
             name=entry.name,
             input_capabilities=input_caps,
             output_capabilities=output_caps,
             tag=existing.tag if existing else None,
+            user_selectable=user_selectable if isinstance(user_selectable, bool) else None,
         )
 
     def _snapshot_google_model(self, entry: ModelEntry, existing: TrackedModel | None = None) -> TrackedModel:
@@ -933,6 +975,7 @@ class ArenaWatcherBot:
         removed: Sequence[tuple[str, TrackedModel]],
         capability_updates: Sequence[CapabilityDiff],
         name_updates: Sequence[tuple[str, str, TrackedModel]],
+        added_title: str = "🆕 New models on Arena:",
     ) -> None:
         if not self._state.chats:
             logger.debug("No chats to notify for model changes.")
@@ -947,7 +990,7 @@ class ArenaWatcherBot:
                 f"{self._format_capabilities(item.model.input_capabilities, item.model.output_capabilities)}"
                 for item in added
             )
-            added_message = f"<b>🆕 New models on Arena:</b>\n{lines}"
+            added_message = f"<b>{self._escape(added_title)}</b>\n{lines}"
 
         removed_message = ""
         if removed:
@@ -1411,6 +1454,216 @@ class ArenaWatcherBot:
                 )
             else:
                 await context.bot.send_message(chat_id=chat_id, text=chunk)
+
+    def _crowd_models_payload(self) -> list[dict[str, Any]]:
+        models: list[dict[str, Any]] = []
+        for identifier, model in sorted(self._state.known_models.items()):
+            item: dict[str, Any] = {
+                "id": identifier,
+                "name": model.name,
+                "input": model.input_capabilities or [],
+                "output": model.output_capabilities or [],
+            }
+            if model.user_selectable is not None:
+                item["userSelectable"] = model.user_selectable
+            models.append(item)
+        return models
+
+    async def _handle_crowd_sightings(
+        self, install_id: str, network: str, models: list[dict[str, Any]]
+    ) -> dict[str, int]:
+        now = time.time()
+        async with self._state_lock:
+            known_ids = set(self._state.known_models)
+            outcome = self._crowd_ledger.record(install_id, network, models, known_ids, now)
+            pruned = self._crowd_ledger.prune(now, known_ids)
+            added = [self._add_crowd_model(raw) for raw in outcome.promoted]
+            if added or outcome.newly_pending or pruned or outcome.known < len(models):
+                self._store.save(self._state)
+
+        if added or outcome.newly_pending:
+            logger.info(
+                "Crowd sighting from %s: %d published, %d pending review.",
+                install_id,
+                len(added),
+                len(outcome.newly_pending),
+            )
+            self._spawn(self._announce_crowd(added, outcome.newly_pending, install_id))
+        return outcome.summary()
+
+    def _add_crowd_model(self, raw: dict[str, Any]) -> ArenaModelChange:
+        identifier = raw["id"]
+        entry = ModelEntry(identifier, ArenaClient._extract_name(raw, identifier), raw)
+        model = self._snapshot_model(entry)
+        self._state.known_models[identifier] = model
+        return ArenaModelChange(identifier=identifier, model=model)
+
+    def _spawn(self, coroutine: Any) -> None:
+        task = asyncio.create_task(coroutine)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _announce_crowd(
+        self,
+        added: Sequence[ArenaModelChange],
+        pending: Sequence[dict[str, Any]],
+        install_id: str,
+    ) -> None:
+        context = SimpleNamespace(bot=self._app.bot)
+        try:
+            if added:
+                await self._notify_changes(
+                    context,
+                    added=sorted(added, key=lambda item: item.model.name.lower()),
+                    removed=[],
+                    capability_updates=[],
+                    name_updates=[],
+                    added_title="🆕 New models on Arena (spotted in Battle):",
+                )
+            for raw in pending:
+                if not self._crowd_review_limiter.allow("review"):
+                    logger.warning("Crowd review DMs are rate limited; see /crowd.")
+                    break
+                await self._notify_admins_pending(context, raw, install_id)
+        except Exception:  # pragma: no cover - network failure
+            logger.exception("Failed to announce crowd sightings.")
+
+    def _format_crowd_model(self, raw: dict[str, Any]) -> str:
+        identifier = raw["id"]
+        entry = ModelEntry(identifier, ArenaClient._extract_name(raw, identifier), raw)
+        model = self._snapshot_model(entry)
+        lines = [
+            f"Model: {self._format_model_name(model, identifier)}"
+            f"{self._format_capabilities(model.input_capabilities, model.output_capabilities)}",
+            f"ID: <code>{self._escape(identifier)}</code>",
+        ]
+        organization = raw.get("organization") or raw.get("provider")
+        if organization:
+            lines.append(f"Organization: {self._escape(str(organization))}")
+        if raw.get("userSelectable") is False:
+            lines.append("Not selectable in Direct (battle-only)")
+        return "\n".join(lines)
+
+    async def _notify_admins_pending(
+        self, context: Any, raw: dict[str, Any], install_id: str
+    ) -> None:
+        identifier = raw["id"]
+        text = (
+            "<b>🕵️ Battle sighting awaiting review</b>\n"
+            f"{self._format_crowd_model(raw)}\n"
+            f"Reported by install <code>{self._escape(install_id)}</code> "
+            f"(1/{self._crowd_ledger.quorum} confirmations)"
+        )
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("✅ Publish", callback_data=f"crowd:approve:{identifier}"),
+                    InlineKeyboardButton("🚫 Reject", callback_data=f"crowd:reject:{identifier}"),
+                ]
+            ]
+        )
+        for admin_id in self._admin_user_ids:
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_id, text=text, parse_mode="HTML", reply_markup=keyboard
+                )
+            except Exception as exc:  # pragma: no cover - network failure
+                logger.warning("Failed to send crowd review to admin %s: %s", admin_id, exc)
+
+    async def _handle_crowd_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        query = update.callback_query
+        user = update.effective_user
+        if not query or not query.data:
+            return
+        if not user or not self._is_admin(user.id):
+            await query.answer("Not allowed.")
+            return
+
+        _, action, identifier = query.data.split(":", 2)
+        now = time.time()
+        added: list[ArenaModelChange] = []
+        async with self._state_lock:
+            if action == "approve":
+                raw = self._crowd_ledger.approve(identifier, now)
+                if raw and identifier not in self._state.known_models:
+                    added.append(self._add_crowd_model(raw))
+                status = "✅ Published" if added else "Already handled"
+            else:
+                self._crowd_ledger.reject(identifier, now)
+                status = "🚫 Rejected"
+            self._store.save(self._state)
+
+        await query.answer(status)
+        try:
+            await query.edit_message_text(
+                f"{query.message.text_html}\n\n<b>{status}</b> by {self._escape(user.full_name)}",
+                parse_mode="HTML",
+            )
+        except Exception as exc:  # pragma: no cover - network failure
+            logger.warning("Failed to update crowd review message: %s", exc)
+        if added:
+            await self._notify_changes(
+                context,
+                added=added,
+                removed=[],
+                capability_updates=[],
+                name_updates=[],
+                added_title="🆕 New models on Arena (spotted in Battle):",
+            )
+
+    async def _handle_crowd_status(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        chat = update.effective_chat
+        user = update.effective_user
+        if not chat or not user or not self._is_admin(user.id):
+            return
+        ledger = self._crowd_ledger
+        lines = [
+            "<b>Battle crowd sightings</b>",
+            f"Pending: {len(ledger.pending)}, published: {len(ledger.data['published'])}, "
+            f"rejected: {len(ledger.data['rejected'])}",
+            f"Trusted installs: {', '.join(ledger.data['trusted']) or 'none'}",
+            f"Banned installs: {', '.join(ledger.data['banned']) or 'none'}",
+        ]
+        for identifier, entry in list(ledger.pending.items())[:15]:
+            name = self._escape(str(entry["model"].get("publicName")))
+            reporters = ", ".join(entry["reports"]) or "-"
+            lines.append(f"• {name} <code>{identifier}</code> — {self._escape(reporters)}")
+        await self._send_message(context, chat_id=chat.id, text="\n".join(lines), parse_mode="HTML")
+
+    async def _handle_crowd_trust(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._handle_crowd_flag(update, context, "trusted")
+
+    async def _handle_crowd_ban(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._handle_crowd_flag(update, context, "banned")
+
+    async def _handle_crowd_flag(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, list_name: str
+    ) -> None:
+        chat = update.effective_chat
+        user = update.effective_user
+        if not chat or not user or not self._is_admin(user.id):
+            return
+        if not context.args:
+            await self._send_message(
+                context,
+                chat_id=chat.id,
+                text=f"Usage: /{'crowdtrust' if list_name == 'trusted' else 'crowdban'} <install> [off]",
+            )
+            return
+        install_id = context.args[0]
+        enabled = not (len(context.args) > 1 and context.args[1].lower() == "off")
+        async with self._state_lock:
+            self._crowd_ledger.set_flag(list_name, install_id, enabled)
+            self._store.save(self._state)
+        await self._send_message(
+            context,
+            chat_id=chat.id,
+            text=f"Install {install_id} {'added to' if enabled else 'removed from'} {list_name}.",
+        )
 
     def _is_admin(self, user_id: int | None) -> bool:
         if user_id is None:

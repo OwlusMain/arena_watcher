@@ -159,6 +159,23 @@ Configure `ADMIN_USER_IDS` to allow specific Telegram users to label models. Tag
 
 Example: `/tag gemini-2.5-flash Gemini 3 Flash` produces `gemini-2.5-flash <i>(Gemini 3 Flash)</i>` in updates.
 
+### Battle crowd sightings (Arena Any Model extension)
+
+arena.ai only lists part of its catalog in HTML now, but Battle mode still reveals the two models after a vote. The Arena Any Model extension picks those up and reports models the bot does not know yet. Set `CROWD_API_PORT` to serve the API from the bot process (put it behind Caddy for HTTPS):
+
+| Variable | Description |
+| --- | --- |
+| `CROWD_API_PORT` | Port for the extension API; unset disables it. |
+| `CROWD_API_HOST` | Bind address (default `127.0.0.1`; `X-Forwarded-For` is trusted only from localhost). |
+| `CROWD_API_SECRET` | HMAC key for install tokens, 32+ characters. Rotating it logs every install out. |
+| `CROWD_POW_BITS` | Proof-of-work difficulty for registering an install (default `18`, a few seconds in the extension). |
+| `CROWD_QUORUM` | Distinct installs from distinct /24 (/48) networks that must report the same model id and name before it is published (default `2`). |
+| `CROWD_TRUSTED_INSTALLS` | Comma-separated install ids whose reports are published immediately. |
+
+Endpoints: `GET /v1/challenge`, `POST /v1/register` (proof of work → token), `GET /v1/models` (models the bot knows; the extension uses it to skip known ids and to fill its model picker) and `POST /v1/sightings`. All are rate limited per install, per IP and globally; bodies are capped at 32 KB and reduced to a handful of validated fields.
+
+Reports below quorum wait for review: each admin in `ADMIN_USER_IDS` gets a DM with *Publish* / *Reject* buttons. Admin commands: `/crowd` (pending list and stats), `/crowdtrust <install> [off]`, `/crowdban <install> [off]`.
+
 ## Development Notes
 
 - The project uses `cloudscraper` to cope with typical Cloudflare anti-bot pages; still, you must provide working cookies/headers if deeper protection is enabled.

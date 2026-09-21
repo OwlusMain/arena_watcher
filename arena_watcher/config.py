@@ -78,6 +78,12 @@ class Config:
     designarena_base_url: str = "https://www.designarena.ai/"
     designarena_request_headers: Dict[str, Any] = field(default_factory=dict)
     designarena_request_cookies: Dict[str, Any] = field(default_factory=dict)
+    crowd_api_port: Optional[int] = None
+    crowd_api_host: str = "127.0.0.1"
+    crowd_api_secret: Optional[str] = None
+    crowd_pow_bits: int = 18
+    crowd_quorum: int = 2
+    crowd_trusted_installs: List[str] = field(default_factory=list)
 
     @classmethod
     def load_from_env(cls) -> "Config":
@@ -155,6 +161,11 @@ class Config:
         designarena_request_headers = _load_json_env(os.environ.get("DESIGNARENA_REQUEST_HEADERS")) or {}
         designarena_request_cookies = _load_json_env(os.environ.get("DESIGNARENA_REQUEST_COOKIES")) or {}
 
+        crowd_api_port = os.environ.get("CROWD_API_PORT")
+        crowd_api_secret = os.environ.get("CROWD_API_SECRET")
+        if crowd_api_port and not crowd_api_secret:
+            raise RuntimeError("CROWD_API_SECRET is required when CROWD_API_PORT is set.")
+
         return cls(
             telegram_token=telegram_token,
             arena_models_url=arena_models_url,
@@ -198,4 +209,10 @@ class Config:
             designarena_base_url=designarena_base_url,
             designarena_request_headers=designarena_request_headers,
             designarena_request_cookies=designarena_request_cookies,
+            crowd_api_port=int(crowd_api_port) if crowd_api_port else None,
+            crowd_api_host=os.environ.get("CROWD_API_HOST", "127.0.0.1"),
+            crowd_api_secret=crowd_api_secret,
+            crowd_pow_bits=int(os.environ.get("CROWD_POW_BITS", "18")),
+            crowd_quorum=int(os.environ.get("CROWD_QUORUM", "2")),
+            crowd_trusted_installs=_split_env_list(os.environ.get("CROWD_TRUSTED_INSTALLS")),
         )
