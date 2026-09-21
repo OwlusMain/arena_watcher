@@ -176,6 +176,16 @@ Endpoints: `GET /v1/challenge`, `POST /v1/register` (proof of work → token), `
 
 Reports below quorum wait for review: each admin in `ADMIN_USER_IDS` gets a DM with *Publish* / *Reject* buttons. Admin commands: `/crowd` (pending list and stats), `/crowdtrust <install> [off]`, `/crowdban <install> [off]`.
 
+### Restoring Arena models without notifications
+
+`scripts/restore_arena_models.py` writes models straight into `known_models`, so the bot treats them as already known and posts nothing. Sources are JSON (model list, `lmarena-tracker` `snapshot.json`, or a bot state file) or arena.ai HTML with `initialModels` (e.g. a Web Archive `id_` copy), as paths or URLs. Stop the bot first, and keep `ARENA_REMOVALS_ENABLED` off — otherwise the restored models that the HTML no longer lists get announced as removed.
+
+```bash
+python scripts/restore_arena_models.py --state /opt/arena/data/state.json \
+  https://raw.githubusercontent.com/Namra7-x/lmarena-tracker/fcec96cba8e32cfff85e5bdb6bfd24d47246d1bd/snapshot.json
+# review the dry run, then add: --apply --removals-paused
+```
+
 ## Development Notes
 
 - The project uses `cloudscraper` to cope with typical Cloudflare anti-bot pages; still, you must provide working cookies/headers if deeper protection is enabled.
