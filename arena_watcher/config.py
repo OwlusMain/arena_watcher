@@ -48,6 +48,7 @@ class Config:
     arena_models_url: str
     poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS
     removal_waitlist_seconds: int = DEFAULT_REMOVAL_WAITLIST_SECONDS
+    arena_removals_enabled: bool = False
     json_path: List[str] = field(default_factory=list)
     model_id_path: List[str] = field(default_factory=list)
     state_path: Path = DEFAULT_STATE_PATH
@@ -94,6 +95,13 @@ class Config:
         removal_waitlist_seconds = int(
             os.environ.get("REMOVAL_WAITLIST_SECONDS", DEFAULT_REMOVAL_WAITLIST_SECONDS)
         )
+
+        arena_removals_enabled = os.environ.get("ARENA_REMOVALS_ENABLED", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
         json_path = _split_env_list(os.environ.get("ARENA_MODELS_JSON_PATH"))
         model_id_path = _split_env_list(os.environ.get("ARENA_MODEL_ID_PATH"))
@@ -152,6 +160,7 @@ class Config:
             arena_models_url=arena_models_url,
             poll_interval_seconds=poll_interval_seconds,
             removal_waitlist_seconds=removal_waitlist_seconds,
+            arena_removals_enabled=arena_removals_enabled,
             json_path=json_path,
             model_id_path=model_id_path,
             state_path=state_path,

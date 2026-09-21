@@ -365,6 +365,22 @@ class ArenaWatcherBot:
                     self._state.chats.remove(chat_id)
                     self._store.save(self._state)
 
+    def _keep_missing_models(
+        self,
+        source_key: str,
+        previous: dict[str, TrackedModel],
+        api_snapshots: dict[str, TrackedModel],
+    ) -> tuple[dict[str, TrackedModel], set[str], set[str], bool]:
+        """Merge the fetched models into the known ones without ever dropping a model.
+
+        Used while the source only exposes part of its catalog, so a model missing from
+        a response says nothing about whether it was actually removed.
+        """
+        snapshots = dict(previous)
+        snapshots.update(api_snapshots)
+        waitlist_updated = self._state.removal_waitlist.pop(source_key, None) is not None
+        return snapshots, set(api_snapshots) - set(previous), set(), waitlist_updated
+
     def _apply_removal_waitlist(
         self,
         source_key: str,
@@ -454,9 +470,14 @@ class ArenaWatcherBot:
                 entry.identifier: self._snapshot_model(entry, previous.get(entry.identifier))
                 for entry in models
             }
-            snapshots, added_ids, removed_ids, waitlist_updated = self._apply_removal_waitlist(
-                "arena", previous, api_snapshots
-            )
+            if self._config.arena_removals_enabled:
+                snapshots, added_ids, removed_ids, waitlist_updated = self._apply_removal_waitlist(
+                    "arena", previous, api_snapshots
+                )
+            else:
+                snapshots, added_ids, removed_ids, waitlist_updated = self._keep_missing_models(
+                    "arena", previous, api_snapshots
+                )
             self._last_snapshot = snapshots
 
             overlapping_ids = set(previous).intersection(snapshots)

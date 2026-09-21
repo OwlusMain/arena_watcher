@@ -47,6 +47,7 @@ Set the following environment variables before running `python main.py`:
 | `ARENA_DIRECT_TIMEOUT_SECONDS` | ❌ | Timeout for the direct Arena probe request (default `60`). |
 | `POLL_INTERVAL_SECONDS` | ❌ | Polling cadence in seconds (default `300`). |
 | `REMOVAL_WAITLIST_SECONDS` | ❌ | Delay before announcing removals when a poll returns removals but no additions (default `1800`). |
+| `ARENA_REMOVALS_ENABLED` | ❌ | Set to `true` to detect and announce Arena removals again. Off by default: arena.ai now exposes only part of its catalog in HTML, so a model missing from a poll is kept instead of being reported as removed. Other sources are unaffected. |
 | `STATE_PATH` | ❌ | File path for storing chat subscriptions and known models (`data/state.json` by default). |
 | `GOOGLE_API_KEY` / `GENAI_API_KEY` / `GEMINI_API_KEY` | ❌ | API key for Google Generative AI. When set, the bot also polls the Google catalog via the official SDK. |
 | `GOOGLE_POLL_INTERVAL_SECONDS` | ❌ | Polling cadence for the Google lookup (defaults to `POLL_INTERVAL_SECONDS`). |
