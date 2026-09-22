@@ -980,7 +980,6 @@ class ArenaWatcherBot:
         removed: Sequence[tuple[str, TrackedModel]],
         capability_updates: Sequence[CapabilityDiff],
         name_updates: Sequence[tuple[str, str, TrackedModel]],
-        added_title: str = "🆕 New models on Arena:",
     ) -> None:
         if not self._state.chats:
             logger.debug("No chats to notify for model changes.")
@@ -995,7 +994,7 @@ class ArenaWatcherBot:
                 f"{self._format_capabilities(item.model.input_capabilities, item.model.output_capabilities)}"
                 for item in added
             )
-            added_message = f"<b>{self._escape(added_title)}</b>\n{lines}"
+            added_message = f"<b>🆕 New models on Arena:</b>\n{lines}"
 
         removed_message = ""
         if removed:
@@ -1523,7 +1522,6 @@ class ArenaWatcherBot:
                     removed=[],
                     capability_updates=[],
                     name_updates=[],
-                    added_title="🆕 New models on Arena (spotted in Battle):",
                 )
             for raw in pending:
                 if not self._crowd_review_limiter.allow("review"):
@@ -1615,7 +1613,6 @@ class ArenaWatcherBot:
                 removed=[],
                 capability_updates=[],
                 name_updates=[],
-                added_title="🆕 New models on Arena (spotted in Battle):",
             )
 
     async def _handle_crowd_status(
