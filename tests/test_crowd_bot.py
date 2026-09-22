@@ -44,7 +44,7 @@ class CrowdBotTests(unittest.IsolatedAsyncioTestCase):
         stored = bot._state.known_models[NEW_ID]
         self.assertEqual((stored.name, stored.user_selectable), ("hidden-model", False))
         text = bot._app.bot.send_message.await_args.kwargs["text"]
-        self.assertIn("spotted in Battle", text)
+        self.assertIn("New models on Arena:", text)
         self.assertIn("hidden-model", text)
         self.assertEqual(bot._crowd_models_payload()[0]["id"], NEW_ID)
 
