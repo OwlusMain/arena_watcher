@@ -12,6 +12,7 @@ from typing import Any, Optional, Sequence
 from aiohttp import web
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Update
 from telegram.constants import ChatMemberStatus, ChatType
+from telegram.error import TelegramError
 from telegram.ext import (
     AIORateLimiter,
     Application,
@@ -1598,7 +1599,12 @@ class ArenaWatcherBot:
                 status = "🚫 Rejected"
             self._store.save(self._state)
 
-        await query.answer(status)
+        try:
+            await query.answer(status)
+        except TelegramError as exc:
+            # Presses queued while the bot was not polling arrive too old to answer;
+            # the decision above already stands, so keep going.
+            logger.info("Could not answer crowd review button: %s", exc)
         try:
             await query.edit_message_text(
                 f"{query.message.text_html}\n\n<b>{status}</b> by {self._escape(user.full_name)}",
