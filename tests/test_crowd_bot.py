@@ -62,5 +62,31 @@ class CrowdBotTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(call["reply_markup"])
 
 
+class CrowdCallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_too_old_press_still_publishes_and_announces(self) -> None:
+        from telegram.error import BadRequest
+
+        bot = _bot(trusted=[])
+        await bot._handle_crowd_sightings("anon", "net", [{"id": NEW_ID, "publicName": "late-model"}])
+        await asyncio.gather(*bot._background_tasks)
+        bot._app.bot.send_message.reset_mock()
+        bot._is_admin = lambda user_id: True
+        query = SimpleNamespace(
+            data=f"crowd:approve:{NEW_ID}",
+            answer=AsyncMock(side_effect=BadRequest("Query is too old")),
+            edit_message_text=AsyncMock(),
+            message=SimpleNamespace(text_html="review"),
+        )
+        update = SimpleNamespace(callback_query=query, effective_user=SimpleNamespace(id=42, full_name="Admin"))
+        context = SimpleNamespace(bot=bot._app.bot)
+
+        await bot._handle_crowd_callback(update, context)
+
+        self.assertIn(NEW_ID, bot._state.known_models)
+        query.edit_message_text.assert_awaited_once()
+        texts = [call.kwargs["text"] for call in bot._app.bot.send_message.await_args_list]
+        self.assertTrue(any("late-model" in text and "New models on Arena" in text for text in texts))
+
+
 if __name__ == "__main__":
     unittest.main()
