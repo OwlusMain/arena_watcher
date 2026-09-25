@@ -158,6 +158,10 @@ Configure `ADMIN_USER_IDS` to allow specific Telegram users to label models. Tag
 
 Example: `/tag gemini-2.5-flash Gemini 3 Flash` produces `gemini-2.5-flash <i>(Gemini 3 Flash)</i>` in updates.
 
+### Polling watchdog
+
+The bot records when each Telegram `getUpdates` long poll finishes. If none has finished for 5 minutes, polling is stuck (commands and inline buttons stop working while the pollers keep running), so the process exits with status 1 and systemd restarts it (`Restart=on-failure`). Blocking source fetches run in worker threads so they do not stall the event loop.
+
 ## Development Notes
 
 - The project uses `cloudscraper` to cope with typical Cloudflare anti-bot pages; still, you must provide working cookies/headers if deeper protection is enabled.
