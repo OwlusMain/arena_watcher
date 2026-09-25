@@ -49,6 +49,24 @@ def _extract_path(data: Any, path: Iterable[str]) -> Any:
     return current
 
 
+def _flatten_catalog_sections(value: Any) -> Any:
+    """Merge Arena's ``/nextjs-api/model-catalog`` sections into one model list.
+
+    The endpoint answers ``[{"arena": "text", "models": [...], "complete": true}, ...]``
+    with a model repeated in every section it belongs to. Other shapes pass through.
+    """
+    if not isinstance(value, list) or not value:
+        return value
+    if not all(isinstance(section, dict) and isinstance(section.get("models"), list) for section in value):
+        return value
+    merged: Dict[str, Dict[str, Any]] = {}
+    for section in value:
+        for model in section["models"]:
+            if isinstance(model, dict) and model.get("id"):
+                merged.setdefault(str(model["id"]), model)
+    return list(merged.values())
+
+
 class ArenaClient:
     def __init__(
         self,
@@ -98,6 +116,7 @@ class ArenaClient:
             except ValueError as exc:
                 raise ArenaFetchError("Arena response did not contain valid JSON.") from exc
             models = _extract_path(payload, self._json_path) if self._json_path else payload
+            models = _flatten_catalog_sections(models)
         else:
             models = self._parse_initial_models(response.text)
 

@@ -61,6 +61,10 @@ Set the following environment variables before running `python main.py`:
 | `DESIGNARENA_REQUEST_HEADERS` | ❌ | JSON object encoded as a string with extra HTTP headers for DesignArena requests. |
 | `DESIGNARENA_REQUEST_COOKIES` | ❌ | JSON object encoded as a string with cookies for DesignArena requests (for example a clearance cookie if the site enables bot protection). |
 
+### arena.ai model catalog
+
+arena.ai no longer embeds `initialModels` in its HTML; the page loads the catalog from `https://arena.ai/nextjs-api/model-catalog`, a list of sections (`text`, `code`, `search`, …) that each list their models. Point `ARENA_MODELS_URL` there: the client merges the sections into one model list.
+
 ### Example
 
 If you can access Arena's Next.js data endpoint after solving the Cloudflare challenge, the response may live at something like:
