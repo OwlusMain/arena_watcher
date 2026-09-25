@@ -16,7 +16,31 @@ def html_response(body: str) -> SimpleNamespace:
     )
 
 
+def json_response(payload: object) -> SimpleNamespace:
+    return SimpleNamespace(
+        headers={"content-type": "application/json"},
+        status_code=200,
+        json=lambda: payload,
+        url="https://arena.ai/nextjs-api/model-catalog",
+    )
+
+
 class ArenaClientTests(unittest.TestCase):
+    def test_model_catalog_sections_are_merged(self) -> None:
+        client = ArenaClient("https://arena.ai/nextjs-api/model-catalog")
+        shared = {"id": "model-1", "displayName": "Model One", "rank": 3}
+        client._scraper = Mock()
+        client._scraper.get.return_value = json_response(
+            [
+                {"arena": "text", "models": [shared, {"id": "model-2", "publicName": "Two"}], "complete": True},
+                {"arena": "code", "models": [dict(shared, rank=9)], "complete": True},
+            ]
+        )
+
+        models = client.fetch_models()
+
+        self.assertEqual([(m.identifier, m.name) for m in models], [("model-1", "Model One"), ("model-2", "Two")])
+
     def test_retries_parse_failure_with_fresh_session(self) -> None:
         client = ArenaClient("https://arena.ai/")
         stale_scraper = Mock()
