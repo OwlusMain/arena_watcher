@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import os
 import time
 from dataclasses import dataclass
 from html import escape
@@ -11,6 +12,7 @@ from typing import Any, Optional, Sequence
 
 from aiohttp import web
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Update
+from telegram.request import HTTPXRequest
 from telegram.constants import ChatMemberStatus, ChatType
 from telegram.error import TelegramError
 from telegram.ext import (
@@ -37,6 +39,26 @@ from .openai_models_client import OpenAIModelFetchError, OpenAIModelsClient
 from .designarena_client import DesignArenaClient, DesignArenaFetchError
 from .state_store import StateStore, TrackedModel, WatcherState
 from .telegram_messages import split_html_message, split_text_message
+
+
+# A getUpdates long poll finishes (with updates, empty or with an error) at least
+# every ~15 s. If none has finished for this long, polling is stuck: the process
+# exits so systemd restarts it (Restart=on-failure).
+POLLING_STALL_SECONDS = 5 * 60
+
+
+class PollingActivityRequest(HTTPXRequest):
+    """getUpdates request that records when the last long poll finished."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.last_finished = time.monotonic()
+
+    async def do_request(self, *args: Any, **kwargs: Any) -> tuple[int, bytes]:
+        try:
+            return await super().do_request(*args, **kwargs)
+        finally:
+            self.last_finished = time.monotonic()
 
 
 @dataclass(slots=True)
@@ -116,11 +138,13 @@ class ArenaWatcherBot:
         # Caps review DMs so a burst of fake installs cannot flood the admins;
         # anything beyond it is still listed by /crowd.
         self._crowd_review_limiter = RateLimiter(capacity=20, per_seconds=3600)
+        self._polling_request = PollingActivityRequest(connection_pool_size=1)
         self._app: Application = (
             ApplicationBuilder()
             .token(config.telegram_token)
             .rate_limiter(AIORateLimiter(max_retries=3))
             .job_queue(JobQueue())
+            .get_updates_request(self._polling_request)
             .post_init(self._on_startup)
             .post_shutdown(self._on_shutdown)
             .build()
@@ -140,6 +164,12 @@ class ArenaWatcherBot:
         if job_queue is None:  # pragma: no cover - guard for PTB configuration changes
             raise RuntimeError("Job queue is not available in this Application configuration.")
 
+        job_queue.run_repeating(
+            self._check_polling,
+            interval=60,
+            first=POLLING_STALL_SECONDS,
+            name="polling-watchdog",
+        )
         job_queue.run_repeating(
             self._poll_arena,
             interval=self._config.poll_interval_seconds,
@@ -178,6 +208,18 @@ class ArenaWatcherBot:
                 first=15,
                 name="designarena-model-poller",
             )
+
+    async def _check_polling(self, _: CallbackContext) -> None:
+        stalled_for = time.monotonic() - self._polling_request.last_finished
+        if stalled_for < POLLING_STALL_SECONDS:
+            return
+        logger.critical(
+            "No getUpdates call has finished for %.0f s; Telegram polling is stuck. "
+            "Exiting so systemd restarts the bot.",
+            stalled_for,
+        )
+        logging.shutdown()
+        os._exit(1)
 
     async def _on_startup(self, _: Application) -> None:
         logger.info("Arena watcher bot started with %d stored chats.", len(self._state.chats))
@@ -503,7 +545,7 @@ class ArenaWatcherBot:
 
     async def _poll_arena(self, context: CallbackContext) -> None:
         try:
-            models = self._arena_client.fetch_models()
+            models = await asyncio.to_thread(self._arena_client.fetch_models)
         except ArenaFetchError as exc:
             logger.warning("Arena fetch failed: %s", exc)
             return
@@ -577,7 +619,7 @@ class ArenaWatcherBot:
             return
 
         try:
-            models = self._google_client.fetch_models()
+            models = await asyncio.to_thread(self._google_client.fetch_models)
         except GoogleModelFetchError as exc:
             logger.warning("Google models fetch failed: %s", exc)
             return
@@ -631,7 +673,7 @@ class ArenaWatcherBot:
             return
 
         try:
-            models = self._openai_client.fetch_models()
+            models = await asyncio.to_thread(self._openai_client.fetch_models)
         except OpenAIModelFetchError as exc:
             logger.warning("OpenAI models fetch failed: %s", exc)
             return
@@ -685,7 +727,7 @@ class ArenaWatcherBot:
             return
 
         try:
-            models = self._anthropic_client.fetch_models()
+            models = await asyncio.to_thread(self._anthropic_client.fetch_models)
         except AnthropicModelFetchError as exc:
             logger.warning("Anthropic models fetch failed: %s", exc)
             return
@@ -739,7 +781,7 @@ class ArenaWatcherBot:
             return
 
         try:
-            models = self._designarena_client.fetch_models()
+            models = await asyncio.to_thread(self._designarena_client.fetch_models)
         except DesignArenaFetchError as exc:
             logger.warning("DesignArena models fetch failed: %s", exc)
             return
